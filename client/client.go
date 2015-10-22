@@ -8,6 +8,8 @@ import (
 	"github.com/pangolinfq/golibfq/mux"
 	"github.com/pangolinfq/golibfq/obf"
 	"github.com/pangolinfq/golibfq/sockstun"
+	r "github.com/pangolinfq/pangolin/rendezvous"
+	"github.com/pangolinfq/pangolin/rendezvous/ecdns"
 	"github.com/pangolinfq/pangolin/utils"
 	"github.com/yinghuocho/gosocks"
 	"golang.org/x/net/websocket"
@@ -27,58 +29,85 @@ type tunnelRequest struct {
 }
 
 type websocketTunnelHandler struct {
-	tlsConfig *tls.Config
-	proxyIPs  []string
-	proxyPort string
-	ch        chan *tunnelRequest
-	auth      sockstun.TunnelAuthenticator
+	tlsConfig    *tls.Config
+	rendezvousor r.Rendezvousor
+	ch           chan *tunnelRequest
+	auth         sockstun.TunnelAuthenticator
+
+	proxyPeers []r.Peer
 }
 
 // no explicit timeout, not clear whether this will hang forever
-func (h *websocketTunnelHandler) dialMuxTunnel(addr string, result chan<- *mux.Client, quit <-chan bool) {
-	var conn *mux.Client
-	var mask [obf.XorMaskLength]byte
-	var obfedWs net.Conn
-	var tlsConn *tls.Conn
+func (h *websocketTunnelHandler) dialMuxTunnel(peer r.Peer, result chan<- *mux.Client, quit <-chan bool) {
+	var ws *websocket.Conn
+	var conf *websocket.Config
+	var wsUrl url.URL
 
-	wsUrl := url.URL{Scheme: "ws", Host: addr}
-	ws, err := websocket.Dial(wsUrl.String(), "", wsUrl.String())
+	ret := make(chan *mux.Client, 1)
+	conn, err := peer.Connect(time.Minute)
+	remoteAddr := conn.RemoteAddr().String()
 	if err != nil {
-		log.Printf("error to connect WebSocket server %s: %s", addr, err)
-		goto ret
+		log.Printf("error to connect peer: %s", err)
+		ret <- nil
+		goto waiting
 	}
-	log.Printf("WebSocket connected to %s", addr)
-	ws.PayloadType = websocket.BinaryFrame
 
-	rand.Read(mask[:])
-	obfedWs = obf.NewXorObfConn(ws, mask)
-	tlsConn = tls.Client(obfedWs, h.tlsConfig)
-	err = tlsConn.Handshake()
+	wsUrl = url.URL{Scheme: "ws", Host: remoteAddr}
+	conf, _ = websocket.NewConfig(wsUrl.String(), wsUrl.String())
+	ws, err = websocket.NewClient(conf, conn)
 	if err != nil {
-		log.Printf("error to accomplish TLS handshake with %s: %s", addr, err)
-		tlsConn.Close()
-		goto ret
+		log.Printf("error to connect WebSocket server: %s", err)
+		ret <- nil
+		goto waiting
 	}
-	log.Printf("TLS handshake accomplished with %s", addr)
-	conn = mux.NewClient(tlsConn)
 
-ret:
+	log.Printf("WebSocket connected to %s", conn.RemoteAddr().String())
+	go func(c *websocket.Conn, a string, ch chan<- *mux.Client) {
+		var mask [obf.XorMaskLength]byte
+		c.PayloadType = websocket.BinaryFrame
+		rand.Read(mask[:])
+		obfed := obf.NewXorObfConn(c, mask)
+		tlsed := tls.Client(obfed, h.tlsConfig)
+		err := tlsed.Handshake()
+		if err != nil {
+			log.Printf("error to accomplish TLS handshake %s: %s", a, err)
+			tlsed.Close()
+			ch <- nil
+		}
+		log.Printf("TLS handshake accomplished with %s", a)
+		ch <- mux.NewClient(tlsed)
+	}(ws, remoteAddr, ret)
+
+waiting:
 	select {
 	case <-quit:
-		if conn != nil {
-			conn.Close()
+		if ws != nil {
+			ws.Close()
 		}
-	case result <- conn:
+	case conn := <-ret:
+		select {
+		case <-quit:
+			if ws != nil {
+				ws.Close()
+			}
+		case result <- conn:
+		}
 	}
 }
 
 func (h *websocketTunnelHandler) muxClient() *mux.Client {
+	if h.proxyPeers == nil {
+		h.proxyPeers = h.rendezvousor.Query(h.tlsConfig.ServerName, time.Minute)
+		if h.proxyPeers == nil {
+			log.Printf("fail to get valid peers by querying %s", h.tlsConfig.ServerName)
+			return nil
+		}
+	}
+
 	ret := make(chan *mux.Client)
 	quit := make(chan bool)
-
-	for _, ip := range h.proxyIPs {
-		addr := net.JoinHostPort(ip, h.proxyPort)
-		go h.dialMuxTunnel(addr, ret, quit)
+	for _, peer := range h.proxyPeers {
+		go h.dialMuxTunnel(peer, ret, quit)
 	}
 
 	t := time.NewTimer(2 * time.Minute)
@@ -88,8 +117,9 @@ func (h *websocketTunnelHandler) muxClient() *mux.Client {
 		case conn := <-ret:
 			if conn == nil {
 				failed += 1
-				if failed == len(h.proxyIPs) {
+				if failed == len(h.proxyPeers) {
 					log.Printf("all attemps to connect tunnel have failed")
+					h.proxyPeers = nil
 				} else {
 					continue
 				}
@@ -99,6 +129,7 @@ func (h *websocketTunnelHandler) muxClient() *mux.Client {
 
 		case <-t.C:
 			log.Printf("attempt to connect tunnel servers reached overall timeout")
+			h.proxyPeers = nil
 			close(quit)
 			return nil
 		}
@@ -165,21 +196,17 @@ func (h *websocketTunnelHandler) ServeSocks(conn *gosocks.SocksConn) {
 }
 
 type clientOptions struct {
-	logFilename         string
-	pidFilename         string
-	remoteProxyNamePort string
-	localSocksAddr      string
-	resolvers           []string
-	caCerts             string
+	logFilename      string
+	pidFilename      string
+	remoteServerName string
+	localSocksAddr   string
+	resolvers        []string
+	caCerts          string
+	ecdnsPubKey      string
 }
 
 // read config file and overwrite config options in opts
 func loadClientConfig(fileName string, opts *clientOptions) {
-}
-
-// resolve namePort using mutiple resolvers, return addresses in the first response.
-func resolveRemoteProxy(namePort string, resolvers []string, timeout time.Duration) []string {
-	return []string{"127.0.0.1"}
 }
 
 func loadCaCerts(path string) *x509.CertPool {
@@ -196,9 +223,10 @@ func main() {
 	var opts clientOptions
 	var resolver string
 	var configFile string
-	flag.StringVar(&opts.remoteProxyNamePort, "remote-proxy-addr", "127.0.0.1:8000", "WebSocket server address")
+	flag.StringVar(&opts.remoteServerName, "remote-server-name", "pangolinfq.org", "WebSocket server name")
 	flag.StringVar(&opts.localSocksAddr, "local-socks-addr", "127.0.0.1:1080", "SOCKS server address")
-	flag.StringVar(&resolver, "dns-resolver", "8.8.8.8,8.8.4.4", "DNS resolvers")
+	flag.StringVar(&resolver, "dns-resolver", "8.8.8.8:53,8.8.4.4:53", "DNS resolvers")
+	flag.StringVar(&opts.ecdnsPubKey, "dns-pubkey-file", "./pub.pem", "PEM eoncoded ECDSA public key file")
 	flag.StringVar(&opts.caCerts, "cacert", "", "trusted CA certificates")
 	flag.StringVar(&configFile, "config", "", "config file")
 	flag.StringVar(&opts.logFilename, "logfile", "", "file to record log")
@@ -217,16 +245,13 @@ func main() {
 		log.Printf("WARNING: fail to initiate log file")
 	}
 
-	// resolve remote proxy address
-	proxyName, proxyPort, err := net.SplitHostPort(opts.remoteProxyNamePort)
+	// load public key for DNS verification
+	ecdnsPubKey, err := ecdns.LoadPublicKey(opts.ecdnsPubKey)
 	if err != nil {
-		log.Fatalf("FATAL: invalid proxy address: %s", opts.remoteProxyNamePort)
+		log.Fatalf("FATAL: fail to load ECDSA public key: %s", err)
 	}
 
-	remoteProxyIPs := resolveRemoteProxy(proxyName, opts.resolvers, time.Minute)
-	if remoteProxyIPs == nil {
-		log.Fatalf("FATAL: fail to resolve %s using %s", opts.remoteProxyNamePort, opts.resolvers)
-	}
+	dnsClient := &ecdns.Client{opts.resolvers, ecdnsPubKey}
 
 	// a channel to receive quit signal from server daemons
 	quit := make(chan bool)
@@ -239,13 +264,12 @@ func main() {
 
 	handler := &websocketTunnelHandler{
 		tlsConfig: &tls.Config{
-			ServerName: proxyName,
+			ServerName: opts.remoteServerName,
 			RootCAs:    loadCaCerts(opts.caCerts),
 		},
-		proxyPort: proxyPort,
-		proxyIPs:  remoteProxyIPs,
-		ch:        make(chan *tunnelRequest),
-		auth:      sockstun.NewTunnelAnonymousAuthenticator(),
+		rendezvousor: dnsClient,
+		ch:           make(chan *tunnelRequest),
+		auth:         sockstun.NewTunnelAnonymousAuthenticator(),
 	}
 	go handler.run()
 	socksServer := gosocks.NewServer(
@@ -269,17 +293,22 @@ func main() {
 	defer socksListener.Close()
 
 	// wait for control/quit signals
-	s := make(chan os.Signal, 1)
-	signal.Notify(s, syscall.SIGHUP)
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM)
 
-	running := true
-	for running == true {
+loop:
+	for {
 		select {
 		case <-quit:
-			log.Printf("FATAL: quit signal received")
-			running = false
-		case <-s:
-			logFile = utils.RotateLog(opts.logFilename, logFile)
+			log.Printf("quit signal received")
+			break loop
+		case s := <-c:
+			switch s {
+			case syscall.SIGINT, syscall.SIGTERM:
+				break loop
+			case syscall.SIGHUP:
+				logFile = utils.RotateLog(opts.logFilename, logFile)
+			}
 		}
 	}
 	log.Printf("done")

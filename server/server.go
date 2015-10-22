@@ -154,17 +154,22 @@ func main() {
 	defer websocketListener.Close()
 
 	// wait for control/quit signals
-	s := make(chan os.Signal, 1)
-	signal.Notify(s, syscall.SIGHUP)
-
-	running := true
-	for running == true {
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM)
+loop:
+	for {
 		select {
 		case <-quit:
-			log.Printf("FATAL: quit signal received")
-			running = false
-		case <-s:
-			logFile = utils.RotateLog(opts.logFilename, logFile)
+			log.Printf("quit signal received")
+			break loop
+		case s := <-c:
+			switch s {
+			case syscall.SIGINT, syscall.SIGTERM:
+				socksListener.Close()
+				break loop
+			case syscall.SIGHUP:
+				logFile = utils.RotateLog(opts.logFilename, logFile)
+			}
 		}
 	}
 	log.Printf("done")
