@@ -94,7 +94,7 @@ loop:
 				if err != nil {
 					log.Printf("fail to load data: %s", err)
 				}
-				server.BulkUpdate(rawData)
+				server.ReloadData(rawData)
 				log.Printf("server data updated")
 			}
 		}

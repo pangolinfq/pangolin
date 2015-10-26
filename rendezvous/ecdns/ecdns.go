@@ -432,7 +432,7 @@ func (svr *Server) Update(k string, v string) {
 	svr.lock.Unlock()
 }
 
-func (svr *Server) BulkUpdate(rawData map[string]string) {
+func (svr *Server) ReloadData(rawData map[string]string) {
 	data := make(map[string][3]string)
 	// generate
 	for k, v := range rawData {
@@ -442,17 +442,15 @@ func (svr *Server) BulkUpdate(rawData map[string]string) {
 			log.Printf("error to sign data %s:%s", k, v)
 			continue
 		}
-		data[k] = [3]string{v, hex.EncodeToString(r.Bytes()), hex.EncodeToString(s.Bytes())}
-	}
-
-	// update
-	svr.lock.Lock()
-	for k, v := range data {
 		if !strings.HasSuffix(k, ".") {
 			k = k + "."
 		}
-		svr.data[k] = v
+		data[k] = [3]string{v, hex.EncodeToString(r.Bytes()), hex.EncodeToString(s.Bytes())}
 	}
+
+	// replace
+	svr.lock.Lock()
+	svr.data = data
 	svr.lock.Unlock()
 }
 
