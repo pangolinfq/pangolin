@@ -5,6 +5,8 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"flag"
+	"github.com/elazarl/goproxy"
+	"github.com/pangolinfq/golibfq/http2socks"
 	"github.com/pangolinfq/golibfq/mux"
 	"github.com/pangolinfq/golibfq/obf"
 	"github.com/pangolinfq/golibfq/sockstun"
@@ -16,6 +18,7 @@ import (
 	"io/ioutil"
 	"log"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
@@ -200,6 +203,7 @@ type clientOptions struct {
 	pidFilename      string
 	remoteServerName string
 	localSocksAddr   string
+	localHttpAddr    string
 	resolvers        []string
 	caCerts          string
 	ecdnsPubKey      string
@@ -219,15 +223,43 @@ func loadCaCerts(path string) *x509.CertPool {
 	return certPool
 }
 
+type goproxyHttp2SocksConverter struct {
+	converter http2socks.Http2SocksConverter
+}
+
+func (c *goproxyHttp2SocksConverter) goproxyHttp2Socks(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
+	resp, err := c.converter.Http(r)
+	if err != nil {
+		goproxy.NewResponse(r, goproxy.ContentTypeText, http.StatusBadGateway, "Failed to forward to SOCKS proxy")
+	}
+	return r, resp
+}
+
+func (c *goproxyHttp2SocksConverter) goproxyConnectHijack(r *http.Request, client net.Conn, ctx *goproxy.ProxyCtx) {
+
+}
+
+func (c *goproxyHttp2SocksConverter) goproxyHttps2Socks(host string, ctx *goproxy.ProxyCtx) (*goproxy.ConnectAction, string) {
+	r := ctx.Req
+	resp, socksConn := c.converter.HttpsConnect(r)
+	if resp.StatusCode != 200 {
+		return goproxy.RejectConnect, host
+	}
+	return &goproxy.ConnectAction{Action: goproxy.ConnectHijack, Hijack: func(r *http.Request, client net.Conn, ctx *goproxy.ProxyCtx) {
+		c.converter.Https(client, socksConn)
+	}}, host
+}
+
 func main() {
 	var opts clientOptions
 	var resolver string
 	var configFile string
-	flag.StringVar(&opts.remoteServerName, "remote-server-name", "pangolinfq.org", "WebSocket server name")
-	flag.StringVar(&opts.localSocksAddr, "local-socks-addr", "127.0.0.1:1080", "SOCKS server address")
+	flag.StringVar(&opts.remoteServerName, "remote-server-name", "rendezvous.pangolinfq.org", "WebSocket server name")
+	flag.StringVar(&opts.localSocksAddr, "local-socks-addr", "127.0.0.1:1080", "SOCKS proxy address")
+	flag.StringVar(&opts.localHttpAddr, "local-http-addr", "127.0.0.1:8088", "HTTP proxy address")
 	flag.StringVar(&resolver, "dns-resolver", "8.8.8.8:53,8.8.4.4:53", "DNS resolvers")
 	flag.StringVar(&opts.ecdnsPubKey, "dns-pubkey-file", "./pub.pem", "PEM eoncoded ECDSA public key file")
-	flag.StringVar(&opts.caCerts, "cacert", "", "trusted CA certificates")
+	flag.StringVar(&opts.caCerts, "cacert", "./cacert.pem", "trusted CA certificates")
 	flag.StringVar(&configFile, "config", "", "config file")
 	flag.StringVar(&opts.logFilename, "logfile", "", "file to record log")
 	flag.StringVar(&opts.pidFilename, "pidfile", "", "file to save process id")
@@ -253,10 +285,10 @@ func main() {
 
 	dnsClient := &ecdns.Client{opts.resolvers, ecdnsPubKey}
 
-	// a channel to receive quit signal from server daemons
+	// a channel to receive quit signal from proxy daemons
 	quit := make(chan bool)
 
-	// start SOCKS server
+	// start SOCKS proxy
 	socksListener, err := net.Listen("tcp", opts.localSocksAddr)
 	if err != nil {
 		log.Fatalf("FATAL: fail to listen on SOCKS address %s: %s", opts.localSocksAddr, err)
@@ -286,11 +318,33 @@ func main() {
 		}
 		close(quit)
 	}()
-	log.Printf("SOCKS server listens on %s", opts.localSocksAddr)
+	log.Printf("SOCKS proxy listens on %s", opts.localSocksAddr)
+
+	// start HTTP proxy
+	httpListener, err := net.Listen("tcp", opts.localHttpAddr)
+	if err != nil {
+		log.Fatalf("FATAL: fail to listen on HTTP address %s: %s", opts.localHttpAddr, err)
+	}
+	socksDialer := &gosocks.SocksDialer{
+		Timeout: 5 * time.Minute,
+		Auth:    &gosocks.AnonymousClientAuthenticator{},
+	}
+	socksConverter := goproxyHttp2SocksConverter{
+		converter: http2socks.Http2SocksConverter{
+			SocksDialer: socksDialer,
+			SocksAddr:   opts.localSocksAddr,
+		},
+	}
+	httpProxy := goproxy.NewProxyHttpServer()
+	httpProxy.OnRequest().DoFunc(socksConverter.goproxyHttp2Socks)
+	httpProxy.OnRequest().HandleConnectFunc(socksConverter.goproxyHttps2Socks)
+	go http.Serve(httpListener, httpProxy)
+	log.Printf("HTTP/S proxy listens on %s", opts.localHttpAddr)
 
 	// pid file and clean up
 	utils.SavePid(opts.pidFilename)
 	defer socksListener.Close()
+	defer httpListener.Close()
 
 	// wait for control/quit signals
 	c := make(chan os.Signal, 1)
