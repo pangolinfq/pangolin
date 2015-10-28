@@ -1,187 +1,84 @@
 package main
 
 import (
-	"crypto/rand"
-	"crypto/tls"
-	"github.com/pangolinfq/golibfq/mux"
-	"github.com/pangolinfq/golibfq/obf"
-	"github.com/pangolinfq/golibfq/sockstun"
-	r "github.com/pangolinfq/pangolin/rendezvous"
 	"github.com/yinghuocho/gosocks"
-	"golang.org/x/net/websocket"
 	"log"
-	"net"
-	"net/url"
+	"strings"
 	"time"
 )
 
-type tunnelRequest struct {
-	ret chan net.Conn
+type forwardingHandler struct {
+	basic            *gosocks.BasicSocksHandler
+	tunnelAddr       string
+	tunnelingDomains map[string]bool
 }
 
-type websocketTunnelHandler struct {
-	tlsConfig    *tls.Config
-	rendezvousor r.Rendezvousor
-	ch           chan *tunnelRequest
-	auth         sockstun.TunnelAuthenticator
-
-	proxyPeers []r.Peer
+type socksForwarder interface {
+	forwardTCP(*gosocks.SocksRequest, *gosocks.SocksConn)
 }
 
-// no explicit timeout, not clear whether this will hang forever
-func (h *websocketTunnelHandler) dialMuxTunnel(peer r.Peer, result chan<- *mux.Client, quit <-chan bool) {
-	var ws *websocket.Conn
-	var conf *websocket.Config
-	var wsUrl url.URL
+type socks2SocksForwarder struct {
+	socksDialer *gosocks.SocksDialer
+	socksAddr   string
+}
 
-	ret := make(chan *mux.Client, 1)
-	conn, err := peer.Connect(time.Minute)
-	remoteAddr := conn.RemoteAddr().String()
+func (sf *socks2SocksForwarder) forwardTCP(req *gosocks.SocksRequest, src *gosocks.SocksConn) {
+	dst, err := sf.socksDialer.Dial(sf.socksAddr)
 	if err != nil {
-		log.Printf("error to connect peer: %s", err)
-		ret <- nil
-		goto waiting
-	}
-
-	wsUrl = url.URL{Scheme: "ws", Host: remoteAddr}
-	conf, _ = websocket.NewConfig(wsUrl.String(), wsUrl.String())
-	ws, err = websocket.NewClient(conf, conn)
-	if err != nil {
-		log.Printf("error to connect WebSocket server: %s", err)
-		ret <- nil
-		goto waiting
-	}
-
-	log.Printf("WebSocket connected to %s", conn.RemoteAddr().String())
-	go func(c *websocket.Conn, a string, ch chan<- *mux.Client) {
-		var mask [obf.XorMaskLength]byte
-		c.PayloadType = websocket.BinaryFrame
-		rand.Read(mask[:])
-		obfed := obf.NewXorObfConn(c, mask)
-		tlsed := tls.Client(obfed, h.tlsConfig)
-		err := tlsed.Handshake()
-		if err != nil {
-			log.Printf("error to accomplish TLS handshake %s: %s", a, err)
-			tlsed.Close()
-			ch <- nil
-		}
-		log.Printf("TLS handshake accomplished with %s", a)
-		ch <- mux.NewClient(tlsed)
-	}(ws, remoteAddr, ret)
-
-waiting:
-	select {
-	case <-quit:
-		if ws != nil {
-			ws.Close()
-		}
-	case conn := <-ret:
-		select {
-		case <-quit:
-			if ws != nil {
-				ws.Close()
-			}
-		case result <- conn:
-		}
-	}
-}
-
-func (h *websocketTunnelHandler) muxClient() *mux.Client {
-	if h.proxyPeers == nil {
-		h.proxyPeers = h.rendezvousor.Query(h.tlsConfig.ServerName, time.Minute)
-		if h.proxyPeers == nil {
-			log.Printf("fail to get valid peers by querying %s", h.tlsConfig.ServerName)
-			return nil
-		}
-	}
-
-	ret := make(chan *mux.Client)
-	quit := make(chan bool)
-	for _, peer := range h.proxyPeers {
-		go h.dialMuxTunnel(peer, ret, quit)
-	}
-
-	t := time.NewTimer(2 * time.Minute)
-	failed := 0
-	for {
-		select {
-		case conn := <-ret:
-			if conn == nil {
-				failed += 1
-				if failed == len(h.proxyPeers) {
-					log.Printf("all attemps to connect tunnel have failed")
-					h.proxyPeers = nil
-				} else {
-					continue
-				}
-			}
-			close(quit)
-			return conn
-
-		case <-t.C:
-			log.Printf("attempt to connect tunnel servers reached overall timeout")
-			h.proxyPeers = nil
-			close(quit)
-			return nil
-		}
-	}
-}
-
-func (h *websocketTunnelHandler) muxStream(client *mux.Client) (*mux.Client, *mux.Stream) {
-	var err error
-	var stream *mux.Stream
-
-	for {
-		if client != nil {
-			stream, err = client.OpenStream()
-			if err != nil {
-				client.Close()
-				client = nil
-				log.Printf("mux Client aborted.")
-				continue
-			}
-			return client, stream
-		} else {
-			client = h.muxClient()
-			if client == nil {
-				return nil, nil
-			}
-			log.Printf("mux Client established.")
-			continue
-		}
-	}
-}
-
-// with multiplexing
-func (h *websocketTunnelHandler) run() {
-	var client *mux.Client
-	var stream *mux.Stream
-	for {
-		request := <-h.ch
-		client, stream = h.muxStream(client)
-		if stream == nil {
-			close(request.ret)
-		} else {
-			request.ret <- stream
-		}
-	}
-}
-
-func (h *websocketTunnelHandler) ServeSocks(conn *gosocks.SocksConn) {
-	r := &tunnelRequest{ret: make(chan net.Conn)}
-	h.ch <- r
-	tunnel, ok := <-r.ret
-	if !ok {
-		log.Printf("error to get a tunnel connection")
-		gosocks.WriteSocksReply(conn, &gosocks.SocksReply{gosocks.SocksGeneralFailure, gosocks.SocksIPv4Host, "0.0.0.0", 0})
-		conn.Close()
+		gosocks.WriteSocksReply(src, &gosocks.SocksReply{
+			gosocks.SocksGeneralFailure, gosocks.SocksIPv4Host, "0.0.0.0", 0})
+		src.Close()
 		return
 	}
-	close(r.ret)
-	if h.auth.ClientAuthenticate(conn, tunnel) != nil {
-		conn.Close()
-		tunnel.Close()
+	gosocks.WriteSocksRequest(dst, req)
+	gosocks.CopyLoopTimeout(src, dst, src.Timeout)
+}
+
+func (f *forwardingHandler) lookup(req *gosocks.SocksRequest, conn *gosocks.SocksConn) socksForwarder {
+	if f.tunnelingDomains == nil {
+		return nil
+	}
+	// (sub)domain matching with tunneling domains
+	labels := strings.Split(req.DstHost, ".")
+	for i := 0; i < len(labels); i++ {
+		_, ok := f.tunnelingDomains[strings.Join(labels[i:], ".")]
+		if ok {
+			return &socks2SocksForwarder{
+				socksDialer: &gosocks.SocksDialer{
+					Timeout: conn.Timeout,
+					Auth:    &gosocks.AnonymousClientAuthenticator{},
+				},
+				socksAddr: f.tunnelAddr,
+			}
+		}
+	}
+	return nil
+}
+
+func (f *forwardingHandler) ServeSocks(conn *gosocks.SocksConn) {
+	conn.SetReadDeadline(time.Now().Add(conn.Timeout))
+	req, err := gosocks.ReadSocksRequest(conn)
+	if err != nil {
+		log.Printf("error in ReadSocksRequest: %s", err)
 		return
 	}
-	sockstun.TunnelClient(conn, tunnel)
+
+	switch req.Cmd {
+	case gosocks.SocksCmdConnect:
+		forwarder := f.lookup(&req, conn)
+		if forwarder != nil {
+			forwarder.forwardTCP(&req, conn)
+		} else {
+			f.basic.HandleCmdConnect(&req, conn)
+		}
+		return
+	case gosocks.SocksCmdUDPAssociate:
+		f.basic.HandleCmdUDPAssociate(&req, conn)
+		return
+	case gosocks.SocksCmdBind:
+		conn.Close()
+		return
+	default:
+		return
+	}
 }

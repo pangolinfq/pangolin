@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"crypto/tls"
 	"crypto/x509"
 	"flag"
@@ -22,18 +23,20 @@ import (
 )
 
 type clientOptions struct {
-	logFilename      string
-	pidFilename      string
-	remoteServerName string
-	localSocksAddr   string
-	localHttpAddr    string
-	resolvers        []string
-	caCerts          string
-	ecdnsPubKey      string
+	logFilename         string
+	pidFilename         string
+	tunnelingDomainFile string
+	tunnelServerName    string
+	localSocksAddr      string
+	localHttpAddr       string
+	tunnelClientAddr    string
+	resolvers           []string
+	caCerts             string
+	ecdnsPubKey         string
 }
 
 // read config file and overwrite config options in opts
-func loadClientConfig(fileName string, opts *clientOptions) {
+func loadClientConfig(filename string, opts *clientOptions) {
 }
 
 func loadCaCerts(path string) *x509.CertPool {
@@ -46,15 +49,33 @@ func loadCaCerts(path string) *x509.CertPool {
 	return certPool
 }
 
+func loadTunnelingDomains(filename string) map[string]bool {
+	ret := make(map[string]bool)
+	file, err := os.Open(filename)
+	if err != nil {
+		log.Printf("fail to load tunneling domains from %s: %s", filename, err)
+		return ret
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		ret[strings.Trim(scanner.Text(), " \r\n ")] = true
+	}
+	return ret
+}
+
 func main() {
 	var opts clientOptions
 	var resolver string
 	var configFile string
-	flag.StringVar(&opts.remoteServerName, "remote-server-name", "rendezvous.pangolinfq.org", "WebSocket server name")
+	flag.StringVar(&opts.tunnelServerName, "tunnel-server-name", "rendezvous.pangolinfq.org", "tunnel server name")
+	flag.StringVar(&opts.tunnelClientAddr, "tunnel-client-addr", "127.0.0.1:10888", "tunnel client(SOCKS) address")
 	flag.StringVar(&opts.localSocksAddr, "local-socks-addr", "127.0.0.1:1080", "SOCKS proxy address")
 	flag.StringVar(&opts.localHttpAddr, "local-http-addr", "127.0.0.1:8088", "HTTP proxy address")
 	flag.StringVar(&resolver, "dns-resolver", "8.8.8.8:53,8.8.4.4:53", "DNS resolvers")
 	flag.StringVar(&opts.ecdnsPubKey, "dns-pubkey-file", "./pub.pem", "PEM eoncoded ECDSA public key file")
+	flag.StringVar(&opts.tunnelingDomainFile, "tunneling-domain-file", "./domain.txt", "domains through tunnel")
 	flag.StringVar(&opts.caCerts, "cacert", "./cacert.pem", "trusted CA certificates")
 	flag.StringVar(&configFile, "config", "", "config file")
 	flag.StringVar(&opts.logFilename, "logfile", "", "file to record log")
@@ -84,32 +105,57 @@ func main() {
 	// a channel to receive quit signal from proxy daemons
 	quit := make(chan bool)
 
-	// start SOCKS proxy
-	socksListener, err := net.Listen("tcp", opts.localSocksAddr)
+	// start tunnel client
+	tunnelListener, err := net.Listen("tcp", opts.tunnelClientAddr)
 	if err != nil {
-		log.Fatalf("FATAL: fail to listen on SOCKS address %s: %s", opts.localSocksAddr, err)
+		log.Fatalf("FATAL: fail to listen on tunnel client (SOCKS) address %s: %s", opts.localSocksAddr, err)
 	}
-	handler := &websocketTunnelHandler{
+	tunnelHandler := &websocketTunnelHandler{
 		tlsConfig: &tls.Config{
-			ServerName: opts.remoteServerName,
+			ServerName: opts.tunnelServerName,
 			RootCAs:    loadCaCerts(opts.caCerts),
 		},
 		rendezvousor: dnsClient,
 		ch:           make(chan *tunnelRequest),
 		auth:         sockstun.NewTunnelAnonymousAuthenticator(),
 	}
-	go handler.run()
-	socksServer := gosocks.NewServer(
+	go tunnelHandler.run()
+	tunnelClient := gosocks.NewServer(
 		opts.localSocksAddr,
 		5*time.Minute,
-		handler,
+		tunnelHandler,
 		// let handler's authenticator to process SOCKS authentication
 		nil,
 	)
 	go func() {
-		err := socksServer.Serve(socksListener)
+		err := tunnelClient.Serve(tunnelListener)
 		if err != nil {
-			log.Printf("FATAL: error to serve SOCKS: %s", err)
+			log.Printf("FATAL: error to start tunnel client (SOCKS): %s", err)
+		}
+		close(quit)
+	}()
+	log.Printf("tunnel client (SOCKS) listens on %s", opts.tunnelClientAddr)
+
+	// start SOCKS proxy
+	socksListener, err := net.Listen("tcp", opts.localSocksAddr)
+	if err != nil {
+		log.Fatalf("FATAL: fail to listen on SOCKS proxy address %s: %s", opts.localSocksAddr, err)
+	}
+	socksHandler := &forwardingHandler{
+		basic:            &gosocks.BasicSocksHandler{},
+		tunnelAddr:       opts.tunnelClientAddr,
+		tunnelingDomains: loadTunnelingDomains(opts.tunnelingDomainFile),
+	}
+	socksProxy := gosocks.NewServer(
+		opts.localSocksAddr,
+		5*time.Minute,
+		socksHandler,
+		&gosocks.AnonymousServerAuthenticator{},
+	)
+	go func() {
+		err := socksProxy.Serve(socksListener)
+		if err != nil {
+			log.Printf("FATAL: error to start SOCKS proxy: %s", err)
 		}
 		close(quit)
 	}()
@@ -118,7 +164,7 @@ func main() {
 	// start HTTP proxy
 	httpListener, err := net.Listen("tcp", opts.localHttpAddr)
 	if err != nil {
-		log.Fatalf("FATAL: fail to listen on HTTP address %s: %s", opts.localHttpAddr, err)
+		log.Fatalf("FATAL: fail to listen on HTTP/S proxy address %s: %s", opts.localHttpAddr, err)
 	}
 
 	socksDialer := &gosocks.SocksDialer{
@@ -139,7 +185,7 @@ func main() {
 
 	// pid file and clean up
 	utils.SavePid(opts.pidFilename)
-	defer socksListener.Close()
+	defer tunnelListener.Close()
 	defer httpListener.Close()
 
 	// wait for control/quit signals
