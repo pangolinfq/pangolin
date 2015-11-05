@@ -30,7 +30,6 @@ type clientOptions struct {
 	tunnelServerName    string
 	localSocksAddr      string
 	localHTTPAddr       string
-	tunnelClientAddr    string
 	resolvers           []string
 	caCerts             string
 	ecdnsPubKey         string
@@ -71,7 +70,6 @@ func main() {
 	var resolver string
 	var configFile string
 	flag.StringVar(&opts.tunnelServerName, "tunnel-server-name", "rendezvous.pangolinfq.org", "tunnel server name")
-	flag.StringVar(&opts.tunnelClientAddr, "tunnel-client-addr", "127.0.0.1:10888", "tunnel client(SOCKS) address")
 	flag.StringVar(&opts.localSocksAddr, "local-socks-addr", "127.0.0.1:1080", "SOCKS proxy address")
 	flag.StringVar(&opts.localHTTPAddr, "local-http-addr", "127.0.0.1:8088", "HTTP proxy address")
 	flag.StringVar(&resolver, "dns-resolver", "8.8.8.8:53,8.8.4.4:53", "DNS resolvers")
@@ -108,10 +106,11 @@ func main() {
 	quit := make(chan bool)
 
 	// start tunnel client
-	tunnelListener, err := net.Listen("tcp", opts.tunnelClientAddr)
+	tunnelListener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	if err != nil {
-		log.Fatalf("FATAL: fail to listen on tunnel client (SOCKS) address %s: %s", opts.localSocksAddr, err)
+		log.Fatalf("FATAL: fail to listen on tunnel client (SOCKS): %s", err)
 	}
+	tunnelClientAddr := tunnelListener.Addr().String()
 	tunnelHandler := &websocketTunnelHandler{
 		tlsConfig: &tls.Config{
 			ServerName: opts.tunnelServerName,
@@ -136,7 +135,7 @@ func main() {
 		}
 		close(quit)
 	}()
-	log.Printf("tunnel client (SOCKS) listens on %s", opts.tunnelClientAddr)
+	log.Printf("tunnel client (SOCKS) listens on %s", tunnelClientAddr)
 
 	// start SOCKS proxy
 	socksListener, err := net.Listen("tcp", opts.localSocksAddr)
@@ -146,7 +145,7 @@ func main() {
 	domains := loadTunnelingDomains(opts.tunnelingDomainFile)
 	socksHandler := &forwardingHandler{
 		basic:      &gosocks.BasicSocksHandler{},
-		tunnelAddr: opts.tunnelClientAddr,
+		tunnelAddr: tunnelClientAddr,
 	}
 
 	if opts.tunnelingAll || domains == nil || len(domains) == 0 {
