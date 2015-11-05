@@ -15,14 +15,13 @@ func RotateLog(filename string, pre *os.File) *os.File {
 	if err != nil {
 		log.Printf("error opening log file: %s", err)
 		return pre
-	} else {
-		// log has an internal mutex to guarantee mutual exclusion with log.Write
-		log.SetOutput(f)
-		if pre != nil {
-			pre.Close()
-		}
-		return f
 	}
+	// log has an internal mutex to guarantee mutual exclusion with log.Write
+	log.SetOutput(f)
+	if pre != nil {
+		pre.Close()
+	}
+	return f
 }
 
 func SavePid(filename string) {

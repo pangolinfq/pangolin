@@ -51,7 +51,7 @@ func (h *websocketTunnelHandler) handler(websocketConn *websocket.Conn) {
 				stream.Close()
 				return
 			}
-			socksConn := &gosocks.SocksConn{c.(*net.TCPConn), 5 * time.Minute}
+			socksConn := &gosocks.SocksConn{Conn: c.(*net.TCPConn), Timeout: 5 * time.Minute}
 			if h.auth.ServerAuthenticate(tunnel, socksConn) != nil {
 				stream.Close()
 				socksConn.Close()

@@ -3,6 +3,7 @@ package main
 import (
 	"github.com/yinghuocho/gosocks"
 	"log"
+	"net"
 	"strings"
 	"time"
 )
@@ -11,6 +12,7 @@ type forwardingHandler struct {
 	basic            *gosocks.BasicSocksHandler
 	tunnelAddr       string
 	tunnelingDomains map[string]bool
+	tunnelingAll     bool
 }
 
 type socksForwarder interface {
@@ -25,8 +27,7 @@ type socks2SocksForwarder struct {
 func (sf *socks2SocksForwarder) forwardTCP(req *gosocks.SocksRequest, src *gosocks.SocksConn) {
 	dst, err := sf.socksDialer.Dial(sf.socksAddr)
 	if err != nil {
-		gosocks.WriteSocksReply(src, &gosocks.SocksReply{
-			gosocks.SocksGeneralFailure, gosocks.SocksIPv4Host, "0.0.0.0", 0})
+		gosocks.ReplyGeneralFailure(src, req)
 		src.Close()
 		return
 	}
@@ -35,9 +36,18 @@ func (sf *socks2SocksForwarder) forwardTCP(req *gosocks.SocksRequest, src *gosoc
 }
 
 func (f *forwardingHandler) lookup(req *gosocks.SocksRequest, conn *gosocks.SocksConn) socksForwarder {
-	if f.tunnelingDomains == nil {
-		return nil
+	// forward all connections through tunnel if tunnelingAll flag is on, or
+	// something wrong with loading tunnelingDomains,
+	if f.tunnelingAll || f.tunnelingDomains == nil {
+		return &socks2SocksForwarder{
+			socksDialer: &gosocks.SocksDialer{
+				Timeout: conn.Timeout,
+				Auth:    &gosocks.AnonymousClientAuthenticator{},
+			},
+			socksAddr: f.tunnelAddr,
+		}
 	}
+
 	// (sub)domain matching with tunneling domains
 	labels := strings.Split(req.DstHost, ".")
 	for i := 0; i < len(labels); i++ {
@@ -53,6 +63,33 @@ func (f *forwardingHandler) lookup(req *gosocks.SocksRequest, conn *gosocks.Sock
 		}
 	}
 	return nil
+}
+
+func (f *forwardingHandler) handleUDPAssociate(req *gosocks.SocksRequest, conn *gosocks.SocksConn) {
+	// bind local port
+	socksAddr := conn.LocalAddr().(*net.TCPAddr)
+	clientBind, err := net.ListenUDP("udp", &net.UDPAddr{IP: socksAddr.IP, Port: 0, Zone: socksAddr.Zone})
+	if err != nil {
+		log.Printf("error in binding local UDP: %s", err)
+		gosocks.ReplyGeneralFailure(conn, req)
+		conn.Close()
+		return
+	}
+
+	bindAddr := clientBind.LocalAddr()
+	hostType, host, port := gosocks.NetAddrToSocksAddr(bindAddr)
+	log.Printf("UDP bind local address: %s", bindAddr.String())
+	_, err = gosocks.WriteSocksReply(conn, &gosocks.SocksReply{
+		Rep:      gosocks.SocksSucceeded,
+		HostType: hostType,
+		BndHost:  host,
+		BndPort:  port,
+	})
+	if err != nil {
+		log.Printf("error in sending reply: %s", err)
+		conn.Close()
+		return
+	}
 }
 
 func (f *forwardingHandler) ServeSocks(conn *gosocks.SocksConn) {

@@ -17,6 +17,6 @@ func main() {
 		log.Fatalf("FATAL: fail to load ECDSA public key: %s", err)
 	}
 
-	client := &ecdns.Client{[]string{"127.0.0.1:53"}, pubKey}
-	log.Println(client.Query("pangolinfq.org", 10*time.Second))
+	client := &ecdns.Client{Resolvers: []string{"8.8.8.8:53"}, PubKey: pubKey}
+	log.Println(client.Query("pangolinfq.org", 20*time.Second))
 }

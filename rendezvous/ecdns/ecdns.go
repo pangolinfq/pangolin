@@ -99,7 +99,7 @@ func parseAndVerify(data []byte, pubKey *ecdsa.PublicKey) ([]r.Peer, error) {
 	addrs := strings.Split(string(val), ",")
 	ret := make([]r.Peer, len(addrs))
 	for i := range ret {
-		ret[i] = r.NetAddrPeer{addrs[i]}
+		ret[i] = r.TCPPeer{Addr: addrs[i]}
 	}
 	return ret, nil
 }
@@ -135,12 +135,12 @@ func query(name string, resolver string, timeout time.Duration, pubKey *ecdsa.Pu
 	go func() {
 		var buf [65536]byte
 		// quit only if a valid response received or conn has closed by sender
-	recvLoop:
+		// recvLoop:
 		for {
 			n, e := conn.Read(buf[:])
 			if e != nil {
 				ret <- nil
-				break recvLoop
+				break
 			}
 			endpoints, e := parseAndVerify(buf[:n], pubKey)
 			if e != nil {
@@ -148,7 +148,7 @@ func query(name string, resolver string, timeout time.Duration, pubKey *ecdsa.Pu
 				continue
 			}
 			ret <- endpoints
-			break recvLoop
+			break
 		}
 		close(fin)
 	}()
@@ -223,7 +223,7 @@ loop:
 		if ret != nil {
 			break loop
 		} else {
-			cnt += 1
+			cnt++
 			if cnt == len(c.Resolvers) {
 				// all resolvers failed
 				break loop
@@ -343,25 +343,24 @@ func (svr *Server) serveTCP() error {
 				if err != nil {
 					c.Close()
 					return
-				} else {
-					resp, ok := svr.handleRequest(req)
-					data, err := resp.Pack()
-					if err != nil {
-						log.Printf("fail to pack DNS response")
-						c.Close()
-						return
-					}
-					if len(data) > dns.MaxMsgSize {
-						c.Close()
-						return
-					}
-					copy(buf[2:], data)
-					binary.BigEndian.PutUint16(buf[:], uint16(len(data)))
-					c.Write(buf[:len(data)+2])
-					if !ok {
-						c.Close()
-						return
-					}
+				}
+				resp, ok := svr.handleRequest(req)
+				data, err := resp.Pack()
+				if err != nil {
+					log.Printf("fail to pack DNS response")
+					c.Close()
+					return
+				}
+				if len(data) > dns.MaxMsgSize {
+					c.Close()
+					return
+				}
+				copy(buf[2:], data)
+				binary.BigEndian.PutUint16(buf[:], uint16(len(data)))
+				c.Write(buf[:len(data)+2])
+				if !ok {
+					c.Close()
+					return
 				}
 			}
 		}(conn)
@@ -386,7 +385,7 @@ func (svr *Server) ListenAndServe() error {
 				return err
 			}
 			log.Printf("TCP server listens on %s", tcpAddr)
-			runnable += 1
+			runnable++
 		case "udp", "udp4", "udp6":
 			log.Printf("start UDP server ...")
 			udpAddr, err := net.ResolveUDPAddr(proto, svr.Addr)
@@ -398,7 +397,7 @@ func (svr *Server) ListenAndServe() error {
 				return err
 			}
 			log.Printf("UDP server listens on %s", udpAddr)
-			runnable += 1
+			runnable++
 		}
 	}
 
@@ -408,9 +407,8 @@ func (svr *Server) ListenAndServe() error {
 	} else if runnable == 1 {
 		if svr.udp != nil {
 			return svr.serveUDP()
-		} else {
-			return svr.serveTCP()
 		}
+		return svr.serveTCP()
 	} else {
 		go svr.serveUDP()
 		return svr.serveTCP()

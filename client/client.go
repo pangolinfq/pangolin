@@ -26,9 +26,10 @@ type clientOptions struct {
 	logFilename         string
 	pidFilename         string
 	tunnelingDomainFile string
+	tunnelingAll        bool
 	tunnelServerName    string
 	localSocksAddr      string
-	localHttpAddr       string
+	localHTTPAddr       string
 	tunnelClientAddr    string
 	resolvers           []string
 	caCerts             string
@@ -54,7 +55,7 @@ func loadTunnelingDomains(filename string) map[string]bool {
 	file, err := os.Open(filename)
 	if err != nil {
 		log.Printf("fail to load tunneling domains from %s: %s", filename, err)
-		return ret
+		return nil
 	}
 	defer file.Close()
 
@@ -72,10 +73,11 @@ func main() {
 	flag.StringVar(&opts.tunnelServerName, "tunnel-server-name", "rendezvous.pangolinfq.org", "tunnel server name")
 	flag.StringVar(&opts.tunnelClientAddr, "tunnel-client-addr", "127.0.0.1:10888", "tunnel client(SOCKS) address")
 	flag.StringVar(&opts.localSocksAddr, "local-socks-addr", "127.0.0.1:1080", "SOCKS proxy address")
-	flag.StringVar(&opts.localHttpAddr, "local-http-addr", "127.0.0.1:8088", "HTTP proxy address")
+	flag.StringVar(&opts.localHTTPAddr, "local-http-addr", "127.0.0.1:8088", "HTTP proxy address")
 	flag.StringVar(&resolver, "dns-resolver", "8.8.8.8:53,8.8.4.4:53", "DNS resolvers")
 	flag.StringVar(&opts.ecdnsPubKey, "dns-pubkey-file", "./pub.pem", "PEM eoncoded ECDSA public key file")
 	flag.StringVar(&opts.tunnelingDomainFile, "tunneling-domain-file", "./domain.txt", "domains through tunnel")
+	flag.BoolVar(&opts.tunnelingAll, "tunneling-all", false, "whether tunneling all traffic")
 	flag.StringVar(&opts.caCerts, "cacert", "./cacert.pem", "trusted CA certificates")
 	flag.StringVar(&configFile, "config", "", "config file")
 	flag.StringVar(&opts.logFilename, "logfile", "", "file to record log")
@@ -100,7 +102,7 @@ func main() {
 		log.Fatalf("FATAL: fail to load ECDSA public key: %s", err)
 	}
 
-	dnsClient := &ecdns.Client{opts.resolvers, ecdnsPubKey}
+	dnsClient := &ecdns.Client{Resolvers: opts.resolvers, PubKey: ecdnsPubKey}
 
 	// a channel to receive quit signal from proxy daemons
 	quit := make(chan bool)
@@ -141,10 +143,17 @@ func main() {
 	if err != nil {
 		log.Fatalf("FATAL: fail to listen on SOCKS proxy address %s: %s", opts.localSocksAddr, err)
 	}
+	domains := loadTunnelingDomains(opts.tunnelingDomainFile)
 	socksHandler := &forwardingHandler{
-		basic:            &gosocks.BasicSocksHandler{},
-		tunnelAddr:       opts.tunnelClientAddr,
-		tunnelingDomains: loadTunnelingDomains(opts.tunnelingDomainFile),
+		basic:      &gosocks.BasicSocksHandler{},
+		tunnelAddr: opts.tunnelClientAddr,
+	}
+
+	if opts.tunnelingAll || domains == nil || len(domains) == 0 {
+		socksHandler.tunnelingAll = true
+	} else {
+		socksHandler.tunnelingAll = false
+		socksHandler.tunnelingDomains = domains
 	}
 	socksProxy := gosocks.NewServer(
 		opts.localSocksAddr,
@@ -162,26 +171,26 @@ func main() {
 	log.Printf("SOCKS proxy listens on %s", opts.localSocksAddr)
 
 	// start HTTP proxy
-	httpListener, err := net.Listen("tcp", opts.localHttpAddr)
+	httpListener, err := net.Listen("tcp", opts.localHTTPAddr)
 	if err != nil {
-		log.Fatalf("FATAL: fail to listen on HTTP/S proxy address %s: %s", opts.localHttpAddr, err)
+		log.Fatalf("FATAL: fail to listen on HTTP/S proxy address %s: %s", opts.localHTTPAddr, err)
 	}
 
 	socksDialer := &gosocks.SocksDialer{
 		Timeout: 5 * time.Minute,
 		Auth:    &gosocks.AnonymousClientAuthenticator{},
 	}
-	socksConverter := goproxyHttp2SocksConverter{
-		converter: http2socks.Http2SocksConverter{
+	socksConverter := goproxyHTTP2SocksConverter{
+		converter: http2socks.Converter{
 			SocksDialer: socksDialer,
 			SocksAddr:   opts.localSocksAddr,
 		},
 	}
 	httpProxy := goproxy.NewProxyHttpServer()
-	httpProxy.OnRequest().DoFunc(socksConverter.goproxyHttp2Socks)
-	httpProxy.OnRequest().HandleConnectFunc(socksConverter.goproxyHttps2Socks)
+	httpProxy.OnRequest().DoFunc(socksConverter.goproxyHTTP2Socks)
+	httpProxy.OnRequest().HandleConnectFunc(socksConverter.goproxyHTTPS2Socks)
 	go http.Serve(httpListener, httpProxy)
-	log.Printf("HTTP/S proxy listens on %s", opts.localHttpAddr)
+	log.Printf("HTTP/S proxy listens on %s", opts.localHTTPAddr)
 
 	// pid file and clean up
 	utils.SavePid(opts.pidFilename)
