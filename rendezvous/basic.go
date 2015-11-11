@@ -5,9 +5,9 @@ import (
 	"time"
 )
 
-// this two interfaces are designed to unify the structure of two essential
+// these two interfaces are designed to unify the structure of two essential
 // steps: 1) get one or more peers through a name; 2) connect to the
-// peers to establish a channel
+// peer to establish a channel
 type Rendezvousor interface {
 	Query(name string, timout time.Duration) []Peer
 }
