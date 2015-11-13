@@ -6,6 +6,8 @@ import (
 	"crypto/x509"
 	"flag"
 	"github.com/elazarl/goproxy"
+	"github.com/getlantern/systray"
+	"github.com/getlantern/systray/example/icon"
 	"github.com/pangolinfq/golibfq/http2socks"
 	"github.com/pangolinfq/golibfq/sockstun"
 	"github.com/pangolinfq/pangolin/rendezvous/ecdns"
@@ -35,8 +37,14 @@ type clientOptions struct {
 	ecdnsPubKey         string
 }
 
+var (
+	opts clientOptions
+	exitCh        = make(chan error, 1)
+	chExitFuncs = make(chan func(), 10)
+)
+
 // read config file and overwrite config options in opts
-func loadClientConfig(filename string, opts *clientOptions) {
+func loadClientConfig(filename string) {
 }
 
 func loadCaCerts(path string) *x509.CertPool {
@@ -65,10 +73,8 @@ func loadTunnelingDomains(filename string) map[string]bool {
 	return ret
 }
 
-func main() {
-	var opts clientOptions
+func parseFlags(configFile *string) {
 	var resolver string
-	var configFile string
 	flag.StringVar(&opts.tunnelServerName, "tunnel-server-name", "rendezvous.pangolinfq.org", "tunnel server name")
 	flag.StringVar(&opts.localSocksAddr, "local-socks-addr", "127.0.0.1:3080", "SOCKS proxy address")
 	flag.StringVar(&opts.localHTTPAddr, "local-http-addr", "127.0.0.1:8088", "HTTP proxy address")
@@ -77,15 +83,83 @@ func main() {
 	flag.StringVar(&opts.tunnelingDomainFile, "tunneling-domain-file", "./domain.txt", "domains through tunnel")
 	flag.BoolVar(&opts.tunnelingAll, "tunneling-all", false, "whether tunneling all traffic")
 	flag.StringVar(&opts.caCerts, "cacert", "./cacert.pem", "trusted CA certificates")
-	flag.StringVar(&configFile, "config", "", "config file")
+	flag.StringVar(configFile, "config", "", "config file")
 	flag.StringVar(&opts.logFilename, "logfile", "", "file to record log")
 	flag.StringVar(&opts.pidFilename, "pidfile", "", "file to save process id")
 	flag.Parse()
 	opts.resolvers = strings.Split(resolver, ",")
+}
+
+// addExitFunc adds a function to be called before the application exits.
+func addExitFunc(exitFunc func()) {
+	chExitFuncs <- exitFunc
+}
+
+// exit tells the application to exit, optionally supplying an error that caused
+// the exit.
+func exit(err error) {
+	defer func() { exitCh <- err }()
+	for {
+		select {
+		case f := <-chExitFuncs:
+			log.Printf("Calling exit func")
+			f()
+		default:
+			log.Printf("No exit func remaining, exit now")
+			return
+		}
+	}
+}
+
+// Handle system signals for clean exit
+func handleSignals() {
+	c := make(chan os.Signal, 1)
+	signal.Notify(c,
+		syscall.SIGHUP,
+		syscall.SIGINT,
+		syscall.SIGTERM,
+		syscall.SIGQUIT)
+	go func() {
+		s := <-c
+		log.Printf("Got signal \"%s\", exiting...", s)
+		exit(nil)
+	}()
+}
+
+func main() {
+	systray.Run(_main)
+}
+
+func configureSystray() {
+	systray.SetIcon(icon.Data)
+	systray.SetTitle("Pangolin")
+	systray.SetTooltip("Configure Pangolin")
+	
+	//show := systray.AddMenuItem(i18n.T("TRAY_SHOW"), i18n.T("SHOW"))
+	quit := systray.AddMenuItem("Quit", "Quit Pangolin")
+	
+	go func() {
+		for {
+			select {
+			//case <-show.ClickedCh:
+			//	ui.Show()
+			case <-quit.ClickedCh:
+				exit(nil)
+				return
+			}
+		}
+	}()
+}
+
+func _main() {
+	var configFile string
+	
+	// parse flags
+	parseFlags(&configFile)
 
 	// read config
 	if configFile != "" {
-		loadClientConfig(configFile, &opts)
+		loadClientConfig(configFile)
 	}
 
 	// initiate log file
@@ -101,9 +175,6 @@ func main() {
 	}
 
 	dnsClient := &ecdns.Client{Resolvers: opts.resolvers, PubKey: ecdnsPubKey}
-
-	// a channel to receive quit signal from proxy daemons
-	quit := make(chan bool)
 
 	// start tunnel client
 	tunnelListener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
@@ -133,7 +204,7 @@ func main() {
 		if err != nil {
 			log.Printf("FATAL: error to start tunnel client (SOCKS): %s", err)
 		}
-		close(quit)
+		exit(err)
 	}()
 	log.Printf("tunnel client (SOCKS) listens on %s", tunnelClientAddr)
 
@@ -165,7 +236,7 @@ func main() {
 		if err != nil {
 			log.Printf("FATAL: error to start SOCKS proxy: %s", err)
 		}
-		close(quit)
+		exit(err)
 	}()
 	log.Printf("SOCKS proxy listens on %s", opts.localSocksAddr)
 
@@ -196,24 +267,14 @@ func main() {
 	defer tunnelListener.Close()
 	defer httpListener.Close()
 
-	// wait for control/quit signals
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM)
+	addExitFunc(systray.Quit)
+	configureSystray()
 
-loop:
-	for {
-		select {
-		case <-quit:
-			log.Printf("quit signal received")
-			break loop
-		case s := <-c:
-			switch s {
-			case syscall.SIGINT, syscall.SIGTERM:
-				break loop
-			case syscall.SIGHUP:
-				logFile = utils.RotateLog(opts.logFilename, logFile)
-			}
-		}
-	}
-	log.Printf("done")
+	waitForExit()
+	
+	os.Exit(0)
+}
+
+func waitForExit() error {
+	return <-exitCh
 }
