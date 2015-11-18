@@ -38,8 +38,8 @@ type clientOptions struct {
 }
 
 var (
-	opts clientOptions
-	exitCh        = make(chan error, 1)
+	opts        clientOptions
+	exitCh      = make(chan error, 1)
 	chExitFuncs = make(chan func(), 10)
 )
 
@@ -126,18 +126,18 @@ func handleSignals() {
 	}()
 }
 
-func main() {
-	systray.Run(_main)
+func waitForExit() error {
+	return <-exitCh
 }
 
 func configureSystray() {
 	systray.SetIcon(icon.Data)
 	systray.SetTitle("Pangolin")
 	systray.SetTooltip("Configure Pangolin")
-	
+
 	//show := systray.AddMenuItem(i18n.T("TRAY_SHOW"), i18n.T("SHOW"))
 	quit := systray.AddMenuItem("Quit", "Quit Pangolin")
-	
+
 	go func() {
 		for {
 			select {
@@ -153,7 +153,7 @@ func configureSystray() {
 
 func _main() {
 	var configFile string
-	
+
 	// parse flags
 	parseFlags(&configFile)
 
@@ -267,14 +267,16 @@ func _main() {
 	defer tunnelListener.Close()
 	defer httpListener.Close()
 
+	// clean exit with signals
+	go handleSignals()
+
 	addExitFunc(systray.Quit)
 	configureSystray()
 
 	waitForExit()
-	
 	os.Exit(0)
 }
 
-func waitForExit() error {
-	return <-exitCh
+func main() {
+	systray.Run(_main)
 }
