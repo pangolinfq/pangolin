@@ -165,7 +165,6 @@ loop:
 		case s := <-c:
 			switch s {
 			case syscall.SIGINT, syscall.SIGTERM:
-				socksListener.Close()
 				break loop
 			case syscall.SIGHUP:
 				logFile = utils.RotateLog(opts.logFilename, logFile)
