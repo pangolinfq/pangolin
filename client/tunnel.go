@@ -28,21 +28,20 @@ type websocketTunnelHandler struct {
 	proxyPeers []r.Peer
 }
 
-// no explicit timeout, not clear whether this will hang forever
 func (h *websocketTunnelHandler) dialMuxTunnel(peer r.Peer, result chan<- *mux.Client, quit <-chan bool) {
 	var ws *websocket.Conn
+	var remoteAddr string
 	var conf *websocket.Config
 	var wsURL url.URL
 
 	ret := make(chan *mux.Client, 1)
 	conn, err := peer.Connect(time.Minute)
-	remoteAddr := conn.RemoteAddr().String()
 	if err != nil {
 		log.Printf("error to connect peer: %s", err)
 		ret <- nil
 		goto waiting
 	}
-
+	remoteAddr = conn.RemoteAddr().String()
 	wsURL = url.URL{Scheme: "ws", Host: remoteAddr}
 	conf, _ = websocket.NewConfig(wsURL.String(), wsURL.String())
 	ws, err = websocket.NewClient(conf, conn)
@@ -150,7 +149,6 @@ func (h *websocketTunnelHandler) muxStream(client *mux.Client) (*mux.Client, *mu
 	}
 }
 
-// with multiplexing
 func (h *websocketTunnelHandler) run() {
 	var client *mux.Client
 	var stream *mux.Stream
