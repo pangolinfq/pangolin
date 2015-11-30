@@ -2,14 +2,16 @@ package autopac
 
 import (
 	"fmt"
-	"github.com/getlantern/filepersist"
-	"github.com/getlantern/pac"
-	"github.com/pangolinfq/pangolin/client/ui"
 	"log"
 	"net/http"
 	"path/filepath"
 	"runtime"
 	"sync/atomic"
+
+	"github.com/getlantern/filepersist"
+	"github.com/getlantern/i18n"
+	"github.com/getlantern/pac"
+	"github.com/pangolinfq/pangolin/client/ui"
 )
 
 const (
@@ -56,7 +58,7 @@ func PromptPrivilegeEscalation(icon []byte) error {
 			log.Printf("Saved icon file to: %v", iconFile)
 		}
 	}
-	err := pac.EnsureHelperToolPresent("pac-cmd", "Pangolin would like to be your system proxy", iconFile)
+	err := pac.EnsureHelperToolPresent("pac-cmd", i18n.T("PAC_SETUP"), iconFile)
 	if err != nil {
 		return fmt.Errorf("Unable to set up pac setting tool: %s", err)
 	}
