@@ -1,4 +1,5 @@
 {
     "QUIT": "Quit",
-    "TRAY_QUIT": "Quit Pangolin"
+    "TRAY_QUIT": "Quit Pangolin",
+    "PAC_SETUP": "Pangolin would like to be your system proxy"
 }
