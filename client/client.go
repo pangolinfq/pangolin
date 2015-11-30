@@ -5,14 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"flag"
-	"github.com/elazarl/goproxy"
-	"github.com/getlantern/systray"
-	"github.com/getlantern/systray/example/icon"
-	"github.com/pangolinfq/golibfq/http2socks"
-	"github.com/pangolinfq/golibfq/sockstun"
-	"github.com/pangolinfq/pangolin/rendezvous/ecdns"
-	"github.com/pangolinfq/pangolin/utils"
-	"github.com/yinghuocho/gosocks"
+	"fmt"
 	"io/ioutil"
 	"log"
 	"net"
@@ -22,6 +15,17 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/elazarl/goproxy"
+	"github.com/getlantern/i18n"
+	"github.com/getlantern/systray"
+	"github.com/pangolinfq/golibfq/chain"
+	"github.com/pangolinfq/golibfq/sockstun"
+	"github.com/pangolinfq/pangolin/client/autopac"
+	"github.com/pangolinfq/pangolin/client/ui"
+	"github.com/pangolinfq/pangolin/rendezvous/ecdns"
+	"github.com/pangolinfq/pangolin/utils"
+	"github.com/yinghuocho/gosocks"
 )
 
 type clientOptions struct {
@@ -131,12 +135,13 @@ func waitForExit() error {
 }
 
 func configureSystray() {
-	systray.SetIcon(icon.Data)
-	systray.SetTitle("Pangolin")
-	systray.SetTooltip("Configure Pangolin")
-
-	//show := systray.AddMenuItem(i18n.T("TRAY_SHOW"), i18n.T("SHOW"))
-	quit := systray.AddMenuItem("Quit", "Quit Pangolin")
+	icon, err := Asset("resources/icons/24.ico")
+	if err != nil {
+		log.Fatalf("Unable to load icon for system tray: %s", err)
+	}
+	systray.SetIcon(icon)
+	systray.SetTooltip("Pangolin")
+	quit := systray.AddMenuItem(i18n.T("TRAY_QUIT"), i18n.T("SHOW"))
 
 	go func() {
 		for {
@@ -149,6 +154,15 @@ func configureSystray() {
 			}
 		}
 	}()
+}
+
+func configureI18n() {
+	i18n.SetMessagesFunc(func(filename string) ([]byte, error) {
+		return Asset(fmt.Sprintf("resources/locale/%s", filename))
+	})
+	if err := i18n.UseOSLocale(); err != nil {
+		log.Printf("i18n.UseOSLocale: %q", err)
+	}
 }
 
 func _main() {
@@ -250,26 +264,47 @@ func _main() {
 		Timeout: 5 * time.Minute,
 		Auth:    &gosocks.AnonymousClientAuthenticator{},
 	}
-	socksConverter := goproxyHTTP2SocksConverter{
-		converter: http2socks.Converter{
+	http2Socks := chain.GoproxySocksChain{
+		Chain: chain.HTTPSocksChain{
 			SocksDialer: socksDialer,
 			SocksAddr:   opts.localSocksAddr,
 		},
 	}
 	httpProxy := goproxy.NewProxyHttpServer()
-	httpProxy.OnRequest().DoFunc(socksConverter.goproxyHTTP2Socks)
-	httpProxy.OnRequest().HandleConnectFunc(socksConverter.goproxyHTTPS2Socks)
+	httpProxy.OnRequest().DoFunc(http2Socks.HTTP)
+	httpProxy.OnRequest().HandleConnectFunc(http2Socks.HTTPS)
 	go http.Serve(httpListener, httpProxy)
 	log.Printf("HTTP/S proxy listens on %s", opts.localHTTPAddr)
 
-	// pid file and clean up
+	// i18n
+	configureI18n()
+
+	// start web based UI
+	uiListener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		log.Fatalf("FATAL: fail to listen on UI (HTTP) address: %s", err)
+	}
+	ui.StartUI(uiListener)
+
+	// pid file
 	utils.SavePid(opts.pidFilename)
-	defer tunnelListener.Close()
-	defer httpListener.Close()
 
 	// clean exit with signals
 	go handleSignals()
 
+	// set PAC
+	icon, err := Asset("resources/icons/32.ico")
+	if err != nil {
+		log.Fatalf("Unable to load icon for PAC: %s", err)
+	}
+	err = autopac.PromptPrivilegeEscalation(icon)
+	if err != nil {
+		log.Fatalf("Unable to escalate priviledge for setting PAC: %s", err)
+	}
+	autopac.EnablePAC(httpListener.Addr().String())
+	addExitFunc(autopac.DisablePAC)
+
+	// systray
 	addExitFunc(systray.Quit)
 	configureSystray()
 
