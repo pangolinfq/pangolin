@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
 	"flag"
@@ -52,7 +54,13 @@ func loadClientConfig(filename string) {
 }
 
 func loadCaCerts(path string) *x509.CertPool {
-	certs, err := ioutil.ReadFile(path)
+	var certs []byte
+	var err error
+	if path != "" {
+		certs, err = ioutil.ReadFile(path)
+	} else {
+		certs, err = Asset("resources/keys/cacert.pem")
+	}
 	if err != nil {
 		return nil
 	}
@@ -61,37 +69,63 @@ func loadCaCerts(path string) *x509.CertPool {
 	return certPool
 }
 
-func loadTunnelingDomains(filename string) map[string]bool {
-	ret := make(map[string]bool)
-	file, err := os.Open(filename)
-	if err != nil {
-		log.Printf("fail to load tunneling domains from %s: %s", filename, err)
-		return nil
+func loadDNSKey(path string) (*ecdsa.PublicKey, error) {
+	if path != "" {
+		return ecdns.LoadPublicKeyFile(opts.ecdnsPubKey)
 	}
-	defer file.Close()
 
-	scanner := bufio.NewScanner(file)
+	data, err := Asset("resources/keys/dnspub.pem")
+	if err != nil {
+		return nil, err
+	}
+	return ecdns.LoadPublicKeyBytes(data)
+}
+
+func loadTunnelingDomains(path string) map[string]bool {
+	ret := make(map[string]bool)
+	var scanner *bufio.Scanner
+
+	if path != "" {
+		file, err := os.Open(path)
+		if err != nil {
+			log.Printf("fail to load tunneling domains from %s: %s", path, err)
+			return nil
+		}
+		defer file.Close()
+		scanner = bufio.NewScanner(file)
+	} else {
+		data, err := Asset("resources/domains.txt")
+		if err != nil {
+			log.Printf("fail to load embedded domains: %s", err)
+			return nil
+		}
+		scanner = bufio.NewScanner(bytes.NewBuffer(data))
+	}
+
 	for scanner.Scan() {
-		ret[strings.Trim(scanner.Text(), " \r\n ")] = true
+		s := strings.Trim(scanner.Text(), " \r\n ")
+		if !strings.HasPrefix(s, "#") {
+			ret[s] = true
+		}
 	}
 	return ret
 }
 
 func parseFlags(configFile *string) {
-	var resolver string
+	var resolvers string
 	flag.StringVar(&opts.tunnelServerName, "tunnel-server-name", "rendezvous.pangolinfq.org", "tunnel server name")
 	flag.StringVar(&opts.localSocksAddr, "local-socks-addr", "127.0.0.1:3080", "SOCKS proxy address")
 	flag.StringVar(&opts.localHTTPAddr, "local-http-addr", "127.0.0.1:8088", "HTTP proxy address")
-	flag.StringVar(&resolver, "dns-resolver", "8.8.8.8:53,8.8.4.4:53", "DNS resolvers")
-	flag.StringVar(&opts.ecdnsPubKey, "dns-pubkey-file", "./pub.pem", "PEM eoncoded ECDSA public key file")
-	flag.StringVar(&opts.tunnelingDomainFile, "tunneling-domain-file", "./domain.txt", "domains through tunnel")
+	flag.StringVar(&resolvers, "dns-resolver", "8.8.8.8:53,8.8.4.4:53,209.244.0.3:53,209.244.0.4:53,64.6.64.6:53,64.6.65.6:53,208.67.222.222:53,208.67.220.220:53,77.88.8.8:53,77.88.8.1:53", "DNS resolvers")
+	flag.StringVar(&opts.ecdnsPubKey, "dns-pubkey-file", "", "PEM eoncoded ECDSA public key file, use embedded public key if not specified")
+	flag.StringVar(&opts.tunnelingDomainFile, "tunneling-domain-file", "", "domains through tunnel, use embedded domain list if not specified")
 	flag.BoolVar(&opts.tunnelingAll, "tunneling-all", false, "whether tunneling all traffic")
-	flag.StringVar(&opts.caCerts, "cacert", "./cacert.pem", "trusted CA certificates")
+	flag.StringVar(&opts.caCerts, "cacert", "", "trusted CA certificates, use embedded certs if not specified")
 	flag.StringVar(configFile, "config", "", "config file")
 	flag.StringVar(&opts.logFilename, "logfile", "", "file to record log")
 	flag.StringVar(&opts.pidFilename, "pidfile", "", "file to save process id")
 	flag.Parse()
-	opts.resolvers = strings.Split(resolver, ",")
+	opts.resolvers = strings.Split(resolvers, ",")
 }
 
 // addExitFunc adds a function to be called before the application exits.
@@ -183,11 +217,10 @@ func _main() {
 	}
 
 	// load public key for DNS verification
-	ecdnsPubKey, err := ecdns.LoadPublicKey(opts.ecdnsPubKey)
+	ecdnsPubKey, err := loadDNSKey(opts.ecdnsPubKey)
 	if err != nil {
 		log.Fatalf("FATAL: fail to load ECDSA public key: %s", err)
 	}
-
 	dnsClient := &ecdns.Client{Resolvers: opts.resolvers, PubKey: ecdnsPubKey}
 
 	// start tunnel client
@@ -234,6 +267,7 @@ func _main() {
 	}
 
 	if opts.tunnelingAll || domains == nil || len(domains) == 0 {
+		log.Printf("Pangolin will tunnel all traffic")
 		socksHandler.tunnelingAll = true
 	} else {
 		socksHandler.tunnelingAll = false

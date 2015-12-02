@@ -25,12 +25,25 @@ type Client struct {
 	PubKey    *ecdsa.PublicKey
 }
 
-func LoadPublicKey(filename string) (*ecdsa.PublicKey, error) {
+func LoadPublicKeyFile(filename string) (*ecdsa.PublicKey, error) {
 	data, err := ioutil.ReadFile(filename)
 	if err != nil {
 		return nil, err
 	}
 
+	block, _ := pem.Decode(data)
+	if block == nil {
+		return nil, errors.New("couldn't decode PEM file")
+	}
+
+	pubkey, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return nil, err
+	}
+	return pubkey.(*ecdsa.PublicKey), nil
+}
+
+func LoadPublicKeyBytes(data []byte) (*ecdsa.PublicKey, error) {
 	block, _ := pem.Decode(data)
 	if block == nil {
 		return nil, errors.New("couldn't decode PEM file")
