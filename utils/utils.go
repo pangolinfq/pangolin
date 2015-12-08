@@ -1,9 +1,14 @@
 package utils
 
 import (
+	"encoding/json"
+	"io"
 	"log"
 	"os"
+	"os/user"
+	"path"
 	"strconv"
+	"sync"
 )
 
 func RotateLog(filename string, pre *os.File) *os.File {
@@ -36,4 +41,66 @@ func SavePid(filename string) {
 		return
 	}
 	f.Write([]byte(strconv.Itoa(os.Getpid())))
+}
+
+type AppData struct {
+	FileName string
+
+	data map[string]string
+	lock sync.RWMutex
+}
+
+func OpenAppData(appName string) (*AppData, error) {
+	u, e := user.Current()
+	if e != nil {
+		return nil, e
+	}
+	name := path.Join(u.HomeDir, "."+appName)
+	f, e := os.OpenFile(name, os.O_RDWR|os.O_CREATE, 0666)
+	if e != nil {
+		return nil, e
+	}
+	defer f.Close()
+	decoder := json.NewDecoder(f)
+	v := make(map[string]string)
+	e = decoder.Decode(&v)
+	if e != nil {
+		if e != io.EOF {
+			return nil, e
+		}
+	}
+	return &AppData{
+		FileName: name,
+		data:     v,
+	}, nil
+}
+
+func (a *AppData) Put(key, value string) {
+	a.lock.Lock()
+	defer a.lock.Unlock()
+	a.data[key] = value
+	a.save()
+}
+
+func (a *AppData) Del(key string) {
+	a.lock.Lock()
+	defer a.lock.Unlock()
+	delete(a.data, key)
+	a.save()
+
+}
+
+func (a *AppData) save() {
+	f, e := os.OpenFile(a.FileName, os.O_RDWR|os.O_CREATE, 0666)
+	if e != nil {
+		return
+	}
+	defer f.Close()
+	encoder := json.NewEncoder(f)
+	encoder.Encode(a.data)
+}
+
+func (a *AppData) Get(key string) (string, bool) {
+	value, ok := a.data[key]
+	return value, ok
 }

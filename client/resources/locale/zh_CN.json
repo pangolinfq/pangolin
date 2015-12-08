@@ -1,5 +1,14 @@
 {
-    "QUIT": "退出",
-    "TRAY_QUIT": "退出 Pangolin",
-    "PAC_SETUP": "Pangolin 需要设置你的系统代理"
+    "TRAY_QUIT": "退出",
+    "TRAY_SETTINGS": "设置",
+    "PAC_SETUP": "Pangolin 需要设置你的系统代理",
+    "UI_TITLE": "Pangolin 信息/配置",
+    "UI_ADDR": "代理地址",
+    "UI_HTTPADDR": "HTTP 代理地址",
+    "UI_SOCKSADDR": "SOCKS 代理地址",
+    "UI_SETTINGS": "配置",
+    "UI_FIREFOXHELP": "Firefox 默认不使用 Pangolin 自动设置的系统代理, 请使用 \"代理地址\" 中显示的地址自己设置代理, 或进行以下操作: \"菜单\" &#8594; \"选项\" &#8594; \"高级\" &#8594; \"网络\" &#8594; \"设置...\" &#8594; \"自动检查此网络的代理设置\"",
+    "UI_PROXY_ALL": "通过代理转发所有请求",
+    "UI_SETTINGS_PAGE": "Pangolin 启动时自动打开配置界面",
+    "UI_LANDING_PAGE": "Pangolin 启动时自动打开内置首页"
 }

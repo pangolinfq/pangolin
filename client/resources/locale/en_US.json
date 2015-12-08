@@ -1,5 +1,14 @@
 {
-    "QUIT": "Quit",
-    "TRAY_QUIT": "Quit Pangolin",
-    "PAC_SETUP": "Pangolin would like to be your system proxy"
+    "TRAY_QUIT": "Quit",
+    "TRAY_SETTINGS": "Settings",
+    "PAC_SETUP": "Pangolin would like to be your system proxy",
+    "UI_TITLE": "Pangolin Info/Settings",
+    "UI_ADDR": "Proxy Address",
+    "UI_HTTPADDR": "HTTP proxy address",
+    "UI_SOCKSADDR": "SOCKS proxy address",
+    "UI_SETTINGS": "Settings",
+    "UI_FIREFOXHELP": "Firefox by-default does not recognize Pangolin's automatic proxy settings, please set proxy yourself using the addresses showing in \"Proxy Address\", or do the following steps: \"menu\" &#8594; \"preferences\" &#8594; \"Advanced\" &#8594; \"Network\" &#8594; \"Settings...\" &#8594; \"Auto-detect proxy settings for this network\"", 
+    "UI_PROXY_ALL": "Proxy all traffic",
+    "UI_SETTINGS_PAGE": "Open settings page when Pangolin starts",
+    "UI_LANDING_PAGE": "Open embedded landing page when Pangolin starts"
 }

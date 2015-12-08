@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -23,10 +24,9 @@ import (
 	"github.com/getlantern/systray"
 	"github.com/pangolinfq/golibfq/chain"
 	"github.com/pangolinfq/golibfq/sockstun"
-	"github.com/pangolinfq/pangolin/client/autopac"
-	"github.com/pangolinfq/pangolin/client/ui"
 	"github.com/pangolinfq/pangolin/rendezvous/ecdns"
 	"github.com/pangolinfq/pangolin/utils"
+	"github.com/pangolinfq/tarfs"
 	"github.com/yinghuocho/gosocks"
 )
 
@@ -38,28 +38,43 @@ type clientOptions struct {
 	tunnelServerName    string
 	localSocksAddr      string
 	localHTTPAddr       string
+	localUIAddr         string
 	resolvers           []string
 	caCerts             string
 	ecdnsPubKey         string
+	landingPage         string
 }
 
-var (
-	opts        clientOptions
-	exitCh      = make(chan error, 1)
-	chExitFuncs = make(chan func(), 10)
-)
+type pangolinClient struct {
+	fs      *tarfs.FileSystem
+	options clientOptions
+	appData *utils.AppData
 
-// read config file and overwrite config options in opts
-func loadClientConfig(filename string) {
+	dnsClient      *ecdns.Client
+	tunnelListener net.Listener
+	tunnelProxy    *gosocks.Server
+	socksHandler   *forwardingHandler
+	socksListener  net.Listener
+	socksProxy     *gosocks.Server
+	httpListener   net.Listener
+	httpProxy      *goproxy.ProxyHttpServer
+	ui             *pangolinUI
+
+	exitCh      chan error
+	chExitFuncs chan func()
 }
 
-func loadCaCerts(path string) *x509.CertPool {
+func (c *pangolinClient) version() string {
+	return fmt.Sprintf("Pangolin-%s 0.0.1dev", runtime.GOOS)
+}
+
+func (c *pangolinClient) loadCaCerts(path string) *x509.CertPool {
 	var certs []byte
 	var err error
 	if path != "" {
 		certs, err = ioutil.ReadFile(path)
 	} else {
-		certs, err = Asset("resources/keys/cacert.pem")
+		certs, err = c.fs.Get("keys/cacert.pem")
 	}
 	if err != nil {
 		return nil
@@ -69,19 +84,19 @@ func loadCaCerts(path string) *x509.CertPool {
 	return certPool
 }
 
-func loadDNSKey(path string) (*ecdsa.PublicKey, error) {
+func (c *pangolinClient) loadDNSKey(path string) (*ecdsa.PublicKey, error) {
 	if path != "" {
-		return ecdns.LoadPublicKeyFile(opts.ecdnsPubKey)
+		return ecdns.LoadPublicKeyFile(path)
 	}
 
-	data, err := Asset("resources/keys/dnspub.pem")
+	data, err := c.fs.Get("keys/dnspub.pem")
 	if err != nil {
 		return nil, err
 	}
 	return ecdns.LoadPublicKeyBytes(data)
 }
 
-func loadTunnelingDomains(path string) map[string]bool {
+func (c *pangolinClient) loadTunnelingDomains(path string) map[string]bool {
 	ret := make(map[string]bool)
 	var scanner *bufio.Scanner
 
@@ -94,7 +109,7 @@ func loadTunnelingDomains(path string) map[string]bool {
 		defer file.Close()
 		scanner = bufio.NewScanner(file)
 	} else {
-		data, err := Asset("resources/domains.txt")
+		data, err := c.fs.Get("domains.txt")
 		if err != nil {
 			log.Printf("fail to load embedded domains: %s", err)
 			return nil
@@ -111,35 +126,27 @@ func loadTunnelingDomains(path string) map[string]bool {
 	return ret
 }
 
-func parseFlags(configFile *string) {
-	var resolvers string
-	flag.StringVar(&opts.tunnelServerName, "tunnel-server-name", "rendezvous.pangolinfq.org", "tunnel server name")
-	flag.StringVar(&opts.localSocksAddr, "local-socks-addr", "127.0.0.1:3080", "SOCKS proxy address")
-	flag.StringVar(&opts.localHTTPAddr, "local-http-addr", "127.0.0.1:8088", "HTTP proxy address")
-	flag.StringVar(&resolvers, "dns-resolver", "8.8.8.8:53,8.8.4.4:53,209.244.0.3:53,209.244.0.4:53,64.6.64.6:53,64.6.65.6:53,208.67.222.222:53,208.67.220.220:53,77.88.8.8:53,77.88.8.1:53", "DNS resolvers")
-	flag.StringVar(&opts.ecdnsPubKey, "dns-pubkey-file", "", "PEM eoncoded ECDSA public key file, use embedded public key if not specified")
-	flag.StringVar(&opts.tunnelingDomainFile, "tunneling-domain-file", "", "domains through tunnel, use embedded domain list if not specified")
-	flag.BoolVar(&opts.tunnelingAll, "tunneling-all", false, "whether tunneling all traffic")
-	flag.StringVar(&opts.caCerts, "cacert", "", "trusted CA certificates, use embedded certs if not specified")
-	flag.StringVar(configFile, "config", "", "config file")
-	flag.StringVar(&opts.logFilename, "logfile", "", "file to record log")
-	flag.StringVar(&opts.pidFilename, "pidfile", "", "file to save process id")
-	flag.Parse()
-	opts.resolvers = strings.Split(resolvers, ",")
+func (c *pangolinClient) configureI18n() {
+	i18n.SetMessagesFunc(func(filename string) ([]byte, error) {
+		return c.fs.Get(fmt.Sprintf("locale/%s", filename))
+	})
+	if err := i18n.UseOSLocale(); err != nil {
+		log.Printf("i18n.UseOSLocale: %q", err)
+	}
 }
 
 // addExitFunc adds a function to be called before the application exits.
-func addExitFunc(exitFunc func()) {
-	chExitFuncs <- exitFunc
+func (c *pangolinClient) addExitFunc(exitFunc func()) {
+	c.chExitFuncs <- exitFunc
 }
 
 // exit tells the application to exit, optionally supplying an error that caused
 // the exit.
-func exit(err error) {
-	defer func() { exitCh <- err }()
+func (c *pangolinClient) exit(err error) {
+	defer func() { c.exitCh <- err }()
 	for {
 		select {
-		case f := <-chExitFuncs:
+		case f := <-c.chExitFuncs:
 			log.Printf("Calling exit func")
 			f()
 		default:
@@ -149,151 +156,216 @@ func exit(err error) {
 	}
 }
 
+func (c *pangolinClient) getLocalSocksAddr() string {
+	if c.appData != nil {
+		addr, ok := c.appData.Get("localSocksAddr")
+		if ok {
+			return addr
+		}
+	}
+
+	return c.options.localSocksAddr
+}
+
+func (c *pangolinClient) getLocalHTTPAddr() string {
+	if c.appData != nil {
+		addr, ok := c.appData.Get("localHTTPAddr")
+		if ok {
+			return addr
+		}
+	}
+
+	return c.options.localHTTPAddr
+}
+
+func (c *pangolinClient) isTunnelingAll(domains map[string]bool) bool {
+	if c.options.tunnelingAll {
+		return true
+	}
+	if domains == nil || len(domains) == 0 {
+		return true
+	}
+	if c.appData != nil {
+		v, ok := c.appData.Get("tunnelingAll")
+		if ok && v == "1" {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *pangolinClient) openSettingsPage() bool {
+	if c.appData != nil {
+		v, ok := c.appData.Get("openSettingsPage")
+		if ok && v == "0" {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *pangolinClient) openLandingPage() bool {
+	if c.appData != nil {
+		v, ok := c.appData.Get("openLandingPage")
+		if ok && v == "0" {
+			return false
+		}
+	}
+	return true
+}
+
 // Handle system signals for clean exit
-func handleSignals() {
-	c := make(chan os.Signal, 1)
-	signal.Notify(c,
+func (c *pangolinClient) handleSignals() {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch,
 		syscall.SIGHUP,
 		syscall.SIGINT,
 		syscall.SIGTERM,
 		syscall.SIGQUIT)
 	go func() {
-		s := <-c
+		s := <-ch
 		log.Printf("Got signal \"%s\", exiting...", s)
-		exit(nil)
+		c.exit(nil)
 	}()
 }
 
-func waitForExit() error {
-	return <-exitCh
+func (c *pangolinClient) waitForExit() error {
+	return <-c.exitCh
 }
 
-func configureSystray() {
-	icon, err := Asset("resources/icons/24.ico")
+func (c *pangolinClient) configureSystray() {
+	icon, err := c.fs.Get("icons/24.ico")
 	if err != nil {
 		log.Fatalf("Unable to load icon for system tray: %s", err)
 	}
 	systray.SetIcon(icon)
 	systray.SetTooltip("Pangolin")
-	quit := systray.AddMenuItem(i18n.T("TRAY_QUIT"), i18n.T("QUIT"))
-
+	settings := systray.AddMenuItem(i18n.T("TRAY_SETTINGS"), "")
+	quit := systray.AddMenuItem(i18n.T("TRAY_QUIT"), "")
 	go func() {
 		for {
 			select {
-			//case <-show.ClickedCh:
-			//	ui.Show()
+			case <-settings.ClickedCh:
+				c.ui.show()
 			case <-quit.ClickedCh:
-				exit(nil)
+				c.exit(nil)
 				return
 			}
 		}
 	}()
 }
 
-func configureI18n() {
-	i18n.SetMessagesFunc(func(filename string) ([]byte, error) {
-		return Asset(fmt.Sprintf("resources/locale/%s", filename))
-	})
-	if err := i18n.UseOSLocale(); err != nil {
-		log.Printf("i18n.UseOSLocale: %q", err)
-	}
+func (c *pangolinClient) parseFlags() {
+	var resolvers string
+	flag.StringVar(&c.options.tunnelServerName, "tunnel-server-name", "rendezvous.pangolinfq.org", "tunnel server name")
+	flag.StringVar(&c.options.localSocksAddr, "local-socks-addr", "127.0.0.1:23080", "SOCKS proxy address")
+	flag.StringVar(&c.options.localHTTPAddr, "local-http-addr", "127.0.0.1:28088", "HTTP proxy address")
+	flag.StringVar(&c.options.localUIAddr, "local-ui-addr", "127.0.0.1:28089", "Web UI address, use random local address when specified address is not available")
+	flag.StringVar(&resolvers, "dns-resolver", "8.8.8.8:53,8.8.4.4:53,209.244.0.3:53,209.244.0.4:53,64.6.64.6:53,64.6.65.6:53,208.67.222.222:53,208.67.220.220:53,77.88.8.8:53,77.88.8.1:53", "DNS resolvers")
+	flag.StringVar(&c.options.ecdnsPubKey, "dns-pubkey-file", "", "PEM eoncoded ECDSA public key file, use embedded public key if not specified")
+	flag.StringVar(&c.options.tunnelingDomainFile, "tunneling-domain-file", "", "domains through tunnel, use embedded domain list if not specified")
+	flag.BoolVar(&c.options.tunnelingAll, "tunneling-all", false, "whether tunneling all traffic")
+	flag.StringVar(&c.options.caCerts, "cacert", "", "trusted CA certificates, use embedded certs if not specified")
+	flag.StringVar(&c.options.logFilename, "logfile", "", "file to record log")
+	flag.StringVar(&c.options.pidFilename, "pidfile", "", "file to save process id")
+	flag.StringVar(&c.options.landingPage, "landing-page", "https://www.google.com/", "landing page")
+	flag.Parse()
+	c.options.resolvers = strings.Split(resolvers, ",")
 }
 
-func _main() {
-	var configFile string
-
+func (c *pangolinClient) _main() {
 	// parse flags
-	parseFlags(&configFile)
+	c.parseFlags()
+	var err error
+	c.fs, err = tarfs.New(Resources, "")
+	if err != nil {
+		log.Fatalf("FATAL: fail to load embedded resources: %s", err)
+	}
 
-	// read config
-	if configFile != "" {
-		loadClientConfig(configFile)
+	c.appData, err = utils.OpenAppData("pangolin")
+	if err != nil {
+		log.Printf("WARNING: unable to load/store customized settings: %s", err)
 	}
 
 	// initiate log file
-	logFile := utils.RotateLog(opts.logFilename, nil)
-	if opts.logFilename != "" && logFile == nil {
+	logFile := utils.RotateLog(c.options.logFilename, nil)
+	if c.options.logFilename != "" && logFile == nil {
 		log.Printf("WARNING: fail to initiate log file")
 	}
 
 	// load public key for DNS verification
-	ecdnsPubKey, err := loadDNSKey(opts.ecdnsPubKey)
+	ecdnsPubKey, err := c.loadDNSKey(c.options.ecdnsPubKey)
 	if err != nil {
 		log.Fatalf("FATAL: fail to load ECDSA public key: %s", err)
 	}
-	dnsClient := &ecdns.Client{Resolvers: opts.resolvers, PubKey: ecdnsPubKey}
+	c.dnsClient = &ecdns.Client{Resolvers: c.options.resolvers, PubKey: ecdnsPubKey}
 
 	// start tunnel client
-	tunnelListener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	c.tunnelListener, err = net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	if err != nil {
 		log.Fatalf("FATAL: fail to listen on tunnel client (SOCKS): %s", err)
 	}
-	tunnelClientAddr := tunnelListener.Addr().String()
+	tunnelProxyAddr := c.tunnelListener.Addr().String()
 	tunnelHandler := &websocketTunnelHandler{
 		tlsConfig: &tls.Config{
-			ServerName: opts.tunnelServerName,
-			RootCAs:    loadCaCerts(opts.caCerts),
+			ServerName: c.options.tunnelServerName,
+			RootCAs:    c.loadCaCerts(c.options.caCerts),
 		},
-		rendezvousor: dnsClient,
+		rendezvousor: c.dnsClient,
 		ch:           make(chan *tunnelRequest),
 		auth:         sockstun.NewTunnelAnonymousAuthenticator(),
 	}
 	go tunnelHandler.run()
-	tunnelClient := gosocks.NewServer(
-		opts.localSocksAddr,
+	c.tunnelProxy = gosocks.NewServer(
+		c.options.localSocksAddr,
 		5*time.Minute,
 		tunnelHandler,
 		// let handler's authenticator to process SOCKS authentication
 		nil,
 	)
 	go func() {
-		err := tunnelClient.Serve(tunnelListener)
+		err := c.tunnelProxy.Serve(c.tunnelListener)
 		if err != nil {
-			log.Printf("FATAL: error to start tunnel client (SOCKS): %s", err)
+			log.Printf("FATAL: error to serve tunnel client (SOCKS): %s", err)
 		}
-		exit(err)
+		c.exit(err)
 	}()
-	log.Printf("tunnel client (SOCKS) listens on %s", tunnelClientAddr)
+	log.Printf("tunnel proxy (SOCKS) listens on %s", tunnelProxyAddr)
 
 	// start SOCKS proxy
-	socksListener, err := net.Listen("tcp", opts.localSocksAddr)
+	localSocksAddr := c.getLocalSocksAddr()
+	c.socksListener, err = net.Listen("tcp", localSocksAddr)
 	if err != nil {
-		log.Fatalf("FATAL: fail to listen on SOCKS proxy address %s: %s", opts.localSocksAddr, err)
+		log.Fatalf("FATAL: fail to listen on SOCKS proxy address %s: %s", localSocksAddr, err)
 	}
-	domains := loadTunnelingDomains(opts.tunnelingDomainFile)
-	socksHandler := &forwardingHandler{
+	domains := c.loadTunnelingDomains(c.options.tunnelingDomainFile)
+	c.socksHandler = &forwardingHandler{
 		basic:      &gosocks.BasicSocksHandler{},
-		tunnelAddr: tunnelClientAddr,
+		tunnelAddr: tunnelProxyAddr,
 	}
-
-	if opts.tunnelingAll || domains == nil || len(domains) == 0 {
-		log.Printf("Pangolin will tunnel all traffic")
-		socksHandler.tunnelingAll = true
-	} else {
-		socksHandler.tunnelingAll = false
-		socksHandler.tunnelingDomains = domains
-	}
-	socksProxy := gosocks.NewServer(
-		opts.localSocksAddr,
+	c.socksHandler.tunnelingDomains = domains
+	c.socksHandler.tunnelingAll = c.isTunnelingAll(domains)
+	c.socksProxy = gosocks.NewServer(
+		localSocksAddr,
 		5*time.Minute,
-		socksHandler,
+		c.socksHandler,
 		&gosocks.AnonymousServerAuthenticator{},
 	)
 	go func() {
-		err := socksProxy.Serve(socksListener)
+		err := c.socksProxy.Serve(c.socksListener)
 		if err != nil {
-			log.Printf("FATAL: error to start SOCKS proxy: %s", err)
+			log.Printf("FATAL: error to serve SOCKS proxy: %s", err)
 		}
-		exit(err)
+		c.exit(err)
 	}()
-	log.Printf("SOCKS proxy listens on %s", opts.localSocksAddr)
+	log.Printf("SOCKS proxy listens on %s", localSocksAddr)
 
 	// start HTTP proxy
-	httpListener, err := net.Listen("tcp", opts.localHTTPAddr)
+	localHTTPAddr := c.getLocalHTTPAddr()
+	c.httpListener, err = net.Listen("tcp", localHTTPAddr)
 	if err != nil {
-		log.Fatalf("FATAL: fail to listen on HTTP/S proxy address %s: %s", opts.localHTTPAddr, err)
+		log.Fatalf("FATAL: fail to listen on HTTP/S proxy address %s: %s", localHTTPAddr, err)
 	}
-
 	socksDialer := &gosocks.SocksDialer{
 		Timeout: 5 * time.Minute,
 		Auth:    &gosocks.AnonymousClientAuthenticator{},
@@ -301,51 +373,126 @@ func _main() {
 	http2Socks := chain.GoproxySocksChain{
 		Chain: chain.HTTPSocksChain{
 			SocksDialer: socksDialer,
-			SocksAddr:   opts.localSocksAddr,
+			SocksAddr:   localSocksAddr,
 		},
 	}
-	httpProxy := goproxy.NewProxyHttpServer()
-	httpProxy.OnRequest().DoFunc(http2Socks.HTTP)
-	httpProxy.OnRequest().HandleConnectFunc(http2Socks.HTTPS)
-	go http.Serve(httpListener, httpProxy)
-	log.Printf("HTTP/S proxy listens on %s", opts.localHTTPAddr)
+	c.httpProxy = goproxy.NewProxyHttpServer()
+	c.httpProxy.OnRequest().DoFunc(http2Socks.HTTP)
+	c.httpProxy.OnRequest().HandleConnectFunc(http2Socks.HTTPS)
+	go func() {
+		err := http.Serve(c.httpListener, c.httpProxy)
+		if err != nil {
+			log.Printf("FATAL: error to serve HTTP/S proxy: %s", err)
+		}
+		c.exit(err)
+	}()
+	log.Printf("HTTP/S proxy listens on %s", localHTTPAddr)
 
 	// i18n
-	configureI18n()
+	c.configureI18n()
 
 	// start web based UI
-	uiListener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	uiListener, err := net.Listen("tcp", c.options.localUIAddr)
 	if err != nil {
-		log.Fatalf("FATAL: fail to listen on UI (HTTP) address: %s", err)
+		uiListener, err = net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+		log.Printf("fail to listen on specified UI (HTTP) address: %s", err)
+		log.Printf("try to use random local address")
+		if err != nil {
+			log.Fatalf("FATAL: fail to listen on UI (HTTP) address: %s", err)
+		}
 	}
-	ui.StartUI(uiListener)
-
-	// pid file
-	utils.SavePid(opts.pidFilename)
-
-	// clean exit with signals
-	go handleSignals()
+	c.ui = startUI(c, uiListener)
 
 	// set PAC
-	icon, err := Asset("resources/icons/32.ico")
+	icon, err := c.fs.Get("icons/24.ico")
 	if err != nil {
 		log.Fatalf("Unable to load icon for PAC: %s", err)
 	}
-	err = autopac.PromptPrivilegeEscalation(icon)
+	err = promptPrivilegeEscalation(icon)
 	if err != nil {
 		log.Fatalf("Unable to escalate priviledge for setting PAC: %s", err)
 	}
-	autopac.EnablePAC(httpListener.Addr().String())
-	addExitFunc(autopac.DisablePAC)
+	pacURL := c.ui.handle(pacPath(), pacHandler(c.httpListener.Addr().String()))
+	enablePAC(pacURL)
+	c.addExitFunc(disablePAC)
+
+	// open starting pages
+	if c.openSettingsPage() {
+		c.ui.show()
+	}
+	if c.openLandingPage() {
+		c.ui.open(c.options.landingPage)
+	}
+
+	// pid file
+	utils.SavePid(c.options.pidFilename)
+
+	// clean exit with signals
+	go c.handleSignals()
 
 	// systray
-	addExitFunc(systray.Quit)
-	configureSystray()
+	c.addExitFunc(systray.Quit)
+	c.configureSystray()
 
-	waitForExit()
+	c.waitForExit()
 	os.Exit(0)
 }
 
+func (c *pangolinClient) tunnelingAllOn() {
+	c.socksHandler = &forwardingHandler{
+		basic:      &gosocks.BasicSocksHandler{},
+		tunnelAddr: c.tunnelListener.Addr().String(),
+	}
+	c.socksHandler.tunnelingAll = true
+	c.socksProxy.ChangeHandler(c.socksHandler)
+	if c.appData != nil {
+		c.appData.Put("tunnelingAll", "1")
+	}
+}
+
+func (c *pangolinClient) tunnelingAllOff() {
+	if c.appData != nil {
+		c.appData.Put("tunnelingAll", "0")
+	}
+
+	domains := c.loadTunnelingDomains(c.options.tunnelingDomainFile)
+	c.socksHandler = &forwardingHandler{
+		basic:      &gosocks.BasicSocksHandler{},
+		tunnelAddr: c.tunnelListener.Addr().String(),
+	}
+	c.socksHandler.tunnelingDomains = domains
+	c.socksHandler.tunnelingAll = false
+	c.socksProxy.ChangeHandler(c.socksHandler)
+}
+
+func (c *pangolinClient) openSettingsPageOn() {
+	if c.appData != nil {
+		c.appData.Put("openSettingsPage", "1")
+	}
+}
+
+func (c *pangolinClient) openSettingsPageOff() {
+	if c.appData != nil {
+		c.appData.Put("openSettingsPage", "0")
+	}
+}
+
+func (c *pangolinClient) openLandingPageOn() {
+	if c.appData != nil {
+		c.appData.Put("openLandingPage", "1")
+	}
+}
+
+func (c *pangolinClient) openLandingPageOff() {
+	if c.appData != nil {
+		c.appData.Put("openLandingPage", "0")
+	}
+}
+
 func main() {
-	systray.Run(_main)
+	client := &pangolinClient{
+		exitCh:      make(chan error, 1),
+		chExitFuncs: make(chan func(), 10),
+	}
+	systray.Run(client._main)
 }

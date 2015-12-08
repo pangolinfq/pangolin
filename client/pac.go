@@ -1,4 +1,4 @@
-package autopac
+package main
 
 import (
 	"fmt"
@@ -11,11 +11,10 @@ import (
 	"github.com/getlantern/filepersist"
 	"github.com/getlantern/i18n"
 	"github.com/getlantern/pac"
-	"github.com/pangolinfq/pangolin/client/ui"
 )
 
 const (
-	formatter = `function FindProxyForURL(url, host) {
+	pacFormatter = `function FindProxyForURL(url, host) {
 			if (isPlainHostName(host) // including localhost
 			|| shExpMatch(host, "*.local")) {
 				return "DIRECT";
@@ -31,23 +30,25 @@ const (
 			}
 			return "PROXY %s; DIRECT";
 		}`
-	pacPath = "/pangolin.pac"
 )
 
 var (
 	isPACOn = int32(0)
 	pacFile []byte
-	pacURL  string
 )
 
 func genPAC(proxyURL string) []byte {
 	if pacFile == nil {
-		pacFile = []byte(fmt.Sprintf(formatter, proxyURL))
+		pacFile = []byte(fmt.Sprintf(pacFormatter, proxyURL))
 	}
 	return pacFile
 }
 
-func PromptPrivilegeEscalation(icon []byte) error {
+func pacPath() string {
+	return "/pangolin.pac"
+}
+
+func promptPrivilegeEscalation(icon []byte) error {
 	var iconFile string
 	if runtime.GOOS == "darwin" {
 		iconFile = filepath.Join("/tmp", "escalatelantern.ico")
@@ -65,16 +66,18 @@ func PromptPrivilegeEscalation(icon []byte) error {
 	return nil
 }
 
-func EnablePAC(proxyURL string) {
-	log.Printf("Setting pangolin as system proxy")
-	handler := func(w http.ResponseWriter, req *http.Request) {
+func pacHandler(proxyURL string) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "application/x-ns-proxy-autoconfig")
 		w.WriteHeader(http.StatusOK)
 		if _, err := w.Write(genPAC(proxyURL)); err != nil {
 			log.Printf("Error writing response: %s", err)
 		}
 	}
-	pacURL = ui.Handle(pacPath, http.HandlerFunc(handler))
+}
+
+func enablePAC(pacURL string) {
+	log.Printf("Setting pangolin as system proxy")
 	log.Printf("Serving PAC file at %v", pacURL)
 	err := pac.On(pacURL)
 	if err != nil {
@@ -83,7 +86,7 @@ func EnablePAC(proxyURL string) {
 	atomic.StoreInt32(&isPACOn, 1)
 }
 
-func DisablePAC() {
+func disablePAC() {
 	if atomic.CompareAndSwapInt32(&isPACOn, 1, 0) {
 		log.Printf("Unsetting pangolin as system proxy")
 		err := pac.Off()
