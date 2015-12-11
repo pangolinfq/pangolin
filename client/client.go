@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/ecdsa"
+	"crypto/md5"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -20,14 +22,15 @@ import (
 	"time"
 
 	"github.com/elazarl/goproxy"
-	"github.com/getlantern/i18n"
 	"github.com/getlantern/systray"
 	"github.com/pangolinfq/golibfq/chain"
 	"github.com/pangolinfq/golibfq/sockstun"
+	"github.com/pangolinfq/i18n"
 	"github.com/pangolinfq/pangolin/rendezvous/ecdns"
 	"github.com/pangolinfq/pangolin/utils"
 	"github.com/pangolinfq/tarfs"
 	"github.com/yinghuocho/gosocks"
+	"golang.org/x/codereview/patch"
 )
 
 type clientOptions struct {
@@ -58,7 +61,9 @@ type pangolinClient struct {
 	socksProxy     *gosocks.Server
 	httpListener   net.Listener
 	httpProxy      *goproxy.ProxyHttpServer
-	ui             *pangolinUI
+
+	ui           *pangolinUI
+	systrayItems pangolinMenu
 
 	exitCh      chan error
 	chExitFuncs chan func()
@@ -68,9 +73,10 @@ func (c *pangolinClient) version() string {
 	return fmt.Sprintf("Pangolin-%s 0.0.1dev", runtime.GOOS)
 }
 
-func (c *pangolinClient) loadCaCerts(path string) *x509.CertPool {
+func (c *pangolinClient) loadCaCerts() *x509.CertPool {
 	var certs []byte
 	var err error
+	path := c.options.caCerts
 	if path != "" {
 		certs, err = ioutil.ReadFile(path)
 	} else {
@@ -84,7 +90,8 @@ func (c *pangolinClient) loadCaCerts(path string) *x509.CertPool {
 	return certPool
 }
 
-func (c *pangolinClient) loadDNSKey(path string) (*ecdsa.PublicKey, error) {
+func (c *pangolinClient) loadDNSKey() (*ecdsa.PublicKey, error) {
+	path := c.options.ecdnsPubKey
 	if path != "" {
 		return ecdns.LoadPublicKeyFile(path)
 	}
@@ -96,12 +103,49 @@ func (c *pangolinClient) loadDNSKey(path string) (*ecdsa.PublicKey, error) {
 	return ecdns.LoadPublicKeyBytes(data)
 }
 
-func (c *pangolinClient) loadTunnelingDomains(path string) map[string]bool {
-	ret := make(map[string]bool)
-	var scanner *bufio.Scanner
+type patchEmbeddedFile struct {
+	rawMD5 string
+	patch  string
+}
 
+func (c *pangolinClient) loadEmbeddedTunnelingDomains() ([]byte, error) {
+	raw, err := c.fs.Get("domains.txt")
+	if err != nil {
+		log.Printf("fail to load embedded domains: %s", err)
+		return nil, err
+	}
+	if c.appData == nil {
+		return raw, err
+	}
+	s, ok := c.appData.Get("tunnelingDomainsPatch")
+	if !ok {
+		return raw, err
+	}
+	var p patchEmbeddedFile
+	if json.Unmarshal([]byte(s), &p) != nil {
+		return raw, err
+	}
+	sum := fmt.Sprintf("%x", md5.Sum(raw))
+	if sum != p.rawMD5 {
+		return raw, nil
+	}
+	diff, err := patch.ParseTextDiff([]byte(p.patch))
+	if err != nil {
+		return raw, nil
+	}
+	patched, err := diff.Apply(raw)
+	if err != nil {
+		return raw, nil
+	}
+	return patched, nil
+}
+
+func (c *pangolinClient) loadTunnelingDomains() map[string]bool {
+	var scanner *bufio.Scanner
+	ret := make(map[string]bool)
+	path := c.options.tunnelingDomainFile
 	if path != "" {
-		file, err := os.Open(path)
+		file, err := os.Open(c.options.tunnelingDomainFile)
 		if err != nil {
 			log.Printf("fail to load tunneling domains from %s: %s", path, err)
 			return nil
@@ -109,9 +153,8 @@ func (c *pangolinClient) loadTunnelingDomains(path string) map[string]bool {
 		defer file.Close()
 		scanner = bufio.NewScanner(file)
 	} else {
-		data, err := c.fs.Get("domains.txt")
+		data, err := c.loadEmbeddedTunnelingDomains()
 		if err != nil {
-			log.Printf("fail to load embedded domains: %s", err)
 			return nil
 		}
 		scanner = bufio.NewScanner(bytes.NewBuffer(data))
@@ -124,15 +167,6 @@ func (c *pangolinClient) loadTunnelingDomains(path string) map[string]bool {
 		}
 	}
 	return ret
-}
-
-func (c *pangolinClient) configureI18n() {
-	i18n.SetMessagesFunc(func(filename string) ([]byte, error) {
-		return c.fs.Get(fmt.Sprintf("locale/%s", filename))
-	})
-	if err := i18n.UseOSLocale(); err != nil {
-		log.Printf("i18n.UseOSLocale: %q", err)
-	}
 }
 
 // addExitFunc adds a function to be called before the application exits.
@@ -233,6 +267,37 @@ func (c *pangolinClient) waitForExit() error {
 	return <-c.exitCh
 }
 
+func (c *pangolinClient) configureI18n() {
+	i18n.SetMessagesFunc(func(filename string) ([]byte, error) {
+		return c.fs.Get(fmt.Sprintf("locale/%s", filename))
+	})
+	if c.appData != nil {
+		locale, ok := c.appData.Get("locale")
+		if ok {
+			err := i18n.SetLocale(locale)
+			if err == nil {
+				return
+			}
+		}
+	}
+	if err := i18n.UseOSLocale(); err != nil {
+		log.Printf("i18n.UseOSLocale: %q", err)
+	}
+}
+
+func (c *pangolinClient) changeLocale(locale string) {
+	if c.appData != nil {
+		c.appData.Put("locale", locale)
+	}
+	c.configureI18n()
+	c.reloadSystray()
+}
+
+type pangolinMenu struct {
+	settings *systray.MenuItem
+	quit     *systray.MenuItem
+}
+
 func (c *pangolinClient) configureSystray() {
 	icon, err := c.fs.Get("icons/24.ico")
 	if err != nil {
@@ -240,19 +305,26 @@ func (c *pangolinClient) configureSystray() {
 	}
 	systray.SetIcon(icon)
 	systray.SetTooltip("Pangolin")
-	settings := systray.AddMenuItem(i18n.T("TRAY_SETTINGS"), "")
-	quit := systray.AddMenuItem(i18n.T("TRAY_QUIT"), "")
+	c.systrayItems = pangolinMenu{
+		settings: systray.AddMenuItem(i18n.T("TRAY_SETTINGS"), ""),
+		quit:     systray.AddMenuItem(i18n.T("TRAY_QUIT"), ""),
+	}
 	go func() {
 		for {
 			select {
-			case <-settings.ClickedCh:
+			case <-c.systrayItems.settings.ClickedCh:
 				c.ui.show()
-			case <-quit.ClickedCh:
+			case <-c.systrayItems.quit.ClickedCh:
 				c.exit(nil)
 				return
 			}
 		}
 	}()
+}
+
+func (c *pangolinClient) reloadSystray() {
+	c.systrayItems.settings.SetTitle(i18n.T("TRAY_SETTINGS"))
+	c.systrayItems.quit.SetTitle(i18n.T("TRAY_QUIT"))
 }
 
 func (c *pangolinClient) parseFlags() {
@@ -268,7 +340,7 @@ func (c *pangolinClient) parseFlags() {
 	flag.StringVar(&c.options.caCerts, "cacert", "", "trusted CA certificates, use embedded certs if not specified")
 	flag.StringVar(&c.options.logFilename, "logfile", "", "file to record log")
 	flag.StringVar(&c.options.pidFilename, "pidfile", "", "file to save process id")
-	flag.StringVar(&c.options.landingPage, "landing-page", "https://www.google.com/", "landing page")
+	flag.StringVar(&c.options.landingPage, "landing-page", "https://www.google.com/", "")
 	flag.Parse()
 	c.options.resolvers = strings.Split(resolvers, ",")
 }
@@ -294,7 +366,7 @@ func (c *pangolinClient) _main() {
 	}
 
 	// load public key for DNS verification
-	ecdnsPubKey, err := c.loadDNSKey(c.options.ecdnsPubKey)
+	ecdnsPubKey, err := c.loadDNSKey()
 	if err != nil {
 		log.Fatalf("FATAL: fail to load ECDSA public key: %s", err)
 	}
@@ -309,7 +381,7 @@ func (c *pangolinClient) _main() {
 	tunnelHandler := &websocketTunnelHandler{
 		tlsConfig: &tls.Config{
 			ServerName: c.options.tunnelServerName,
-			RootCAs:    c.loadCaCerts(c.options.caCerts),
+			RootCAs:    c.loadCaCerts(),
 		},
 		rendezvousor: c.dnsClient,
 		ch:           make(chan *tunnelRequest),
@@ -338,7 +410,7 @@ func (c *pangolinClient) _main() {
 	if err != nil {
 		log.Fatalf("FATAL: fail to listen on SOCKS proxy address %s: %s", localSocksAddr, err)
 	}
-	domains := c.loadTunnelingDomains(c.options.tunnelingDomainFile)
+	domains := c.loadTunnelingDomains()
 	c.socksHandler = &forwardingHandler{
 		basic:      &gosocks.BasicSocksHandler{},
 		tunnelAddr: tunnelProxyAddr,
@@ -416,77 +488,82 @@ func (c *pangolinClient) _main() {
 	enablePAC(pacURL)
 	c.addExitFunc(disablePAC)
 
+	// systray
+	c.addExitFunc(systray.Quit)
+	c.configureSystray()
+
+	// clean exit with signals
+	go c.handleSignals()
+
+	// pid file
+	utils.SavePid(c.options.pidFilename)
+
 	// open starting pages
 	if c.openSettingsPage() {
 		c.ui.show()
 	}
 	if c.openLandingPage() {
-		c.ui.open(c.options.landingPage)
+		if c.openSettingsPage() {
+			// wait to avoid launching new browser window
+			time.Sleep(2 * time.Second)
+			c.ui.open(c.options.landingPage)
+		}
 	}
-
-	// pid file
-	utils.SavePid(c.options.pidFilename)
-
-	// clean exit with signals
-	go c.handleSignals()
-
-	// systray
-	c.addExitFunc(systray.Quit)
-	c.configureSystray()
 
 	c.waitForExit()
 	os.Exit(0)
 }
 
-func (c *pangolinClient) tunnelingAllOn() {
-	c.socksHandler = &forwardingHandler{
-		basic:      &gosocks.BasicSocksHandler{},
-		tunnelAddr: c.tunnelListener.Addr().String(),
+func (c *pangolinClient) switchTunneling(state bool) {
+	newHandler := &forwardingHandler{
+		basic:            c.socksHandler.basic,
+		tunnelAddr:       c.socksHandler.tunnelAddr,
+		tunnelingDomains: c.socksHandler.tunnelingDomains,
+		tunnelingAll:     state,
 	}
-	c.socksHandler.tunnelingAll = true
+	c.socksHandler = newHandler
 	c.socksProxy.ChangeHandler(c.socksHandler)
 	if c.appData != nil {
-		c.appData.Put("tunnelingAll", "1")
+		if state {
+			c.appData.Put("tunnelingAll", "1")
+		} else {
+			c.appData.Put("tunnelingAll", "0")
+		}
 	}
+}
+
+func (c *pangolinClient) switchFlags(name string, state bool) {
+	if c.appData != nil {
+		if state {
+			c.appData.Put(name, "1")
+		} else {
+			c.appData.Put(name, "0")
+		}
+	}
+}
+
+func (c *pangolinClient) tunnelingAllOn() {
+	c.switchTunneling(true)
 }
 
 func (c *pangolinClient) tunnelingAllOff() {
-	if c.appData != nil {
-		c.appData.Put("tunnelingAll", "0")
-	}
-
-	domains := c.loadTunnelingDomains(c.options.tunnelingDomainFile)
-	c.socksHandler = &forwardingHandler{
-		basic:      &gosocks.BasicSocksHandler{},
-		tunnelAddr: c.tunnelListener.Addr().String(),
-	}
-	c.socksHandler.tunnelingDomains = domains
-	c.socksHandler.tunnelingAll = false
-	c.socksProxy.ChangeHandler(c.socksHandler)
+	c.switchTunneling(false)
 }
 
 func (c *pangolinClient) openSettingsPageOn() {
-	if c.appData != nil {
-		c.appData.Put("openSettingsPage", "1")
-	}
+	c.switchFlags("openSettingsPage", true)
 }
 
 func (c *pangolinClient) openSettingsPageOff() {
-	if c.appData != nil {
-		c.appData.Put("openSettingsPage", "0")
-	}
+	c.switchFlags("openSettingsPage", false)
 }
 
 func (c *pangolinClient) openLandingPageOn() {
-	if c.appData != nil {
-		c.appData.Put("openLandingPage", "1")
-	}
+	c.switchFlags("openLandingPage", true)
 }
 
 func (c *pangolinClient) openLandingPageOff() {
-	if c.appData != nil {
-		c.appData.Put("openLandingPage", "0")
-	}
+	c.switchFlags("openLandingPage", false)
 }
 
 func main() {
