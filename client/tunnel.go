@@ -3,16 +3,17 @@ package main
 import (
 	"crypto/rand"
 	"crypto/tls"
+	"log"
+	"net"
+	"net/url"
+	"time"
+
 	"github.com/pangolinfq/golibfq/mux"
 	"github.com/pangolinfq/golibfq/obf"
 	"github.com/pangolinfq/golibfq/sockstun"
 	r "github.com/pangolinfq/pangolin/rendezvous"
 	"github.com/yinghuocho/gosocks"
 	"golang.org/x/net/websocket"
-	"log"
-	"net"
-	"net/url"
-	"time"
 )
 
 type tunnelRequest struct {
@@ -65,7 +66,9 @@ func (h *websocketTunnelHandler) dialMuxTunnel(peer r.Peer, result chan<- *mux.C
 			ch <- nil
 		}
 		log.Printf("TLS handshake accomplished with %s", a)
-		ch <- mux.NewClient(tlsed)
+		cient := mux.NewClient(tlsed)
+		cient.SetIdleTime(5 * time.Minute)
+		ch <- cient
 	}(ws, remoteAddr, ret)
 
 waiting:
