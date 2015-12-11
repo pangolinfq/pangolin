@@ -1,11 +1,12 @@
 package main
 
 import (
-	"github.com/pangolinfq/golibfq/chain"
-	"github.com/yinghuocho/gosocks"
 	"log"
 	"strings"
 	"time"
+	
+	"github.com/pangolinfq/golibfq/chain"
+	"github.com/yinghuocho/gosocks"
 )
 
 type forwardingHandler struct {
