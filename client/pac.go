@@ -9,8 +9,8 @@ import (
 	"sync/atomic"
 
 	"github.com/getlantern/filepersist"
-	"github.com/getlantern/i18n"
 	"github.com/getlantern/pac"
+	"github.com/pangolinfq/i18n"
 )
 
 const (
