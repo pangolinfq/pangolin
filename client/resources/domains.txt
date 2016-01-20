@@ -2094,6 +2094,7 @@ fatproxy.com
 favotter.net
 favstar.fm
 fawanghuihui.org
+fbcdn.net
 fbunblocker.net
 fc2blog.net
 fc2china.com
@@ -2626,6 +2627,7 @@ grjsq.me
 grjsq.tv
 group-facials.com
 gsp.ro
+gstatic.com
 gsw777.com
 gt3themes.com
 guanyincitta.com
@@ -7058,3 +7060,8 @@ zz8080.com
 zzb.bz
 一頁.com
 ほしの島のにゃんこ.com
+ggpht.com
+twimg.com
+chinagate.com
+dw.com
+dwnews.net

@@ -5,15 +5,19 @@ import (
 	"bytes"
 	"crypto/ecdsa"
 	"crypto/md5"
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
+	"errors"
 	"flag"
 	"fmt"
 	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"runtime"
@@ -33,6 +37,10 @@ import (
 	"golang.org/x/codereview/patch"
 )
 
+const (
+	PANGOLIN_VERSION = "0.0.1-dev"
+)
+
 type clientOptions struct {
 	logFilename         string
 	pidFilename         string
@@ -46,6 +54,8 @@ type clientOptions struct {
 	caCerts             string
 	ecdnsPubKey         string
 	landingPage         string
+	updatePubKey        string
+	updateURL           string
 }
 
 type pangolinClient struct {
@@ -62,6 +72,8 @@ type pangolinClient struct {
 	httpListener   net.Listener
 	httpProxy      *goproxy.ProxyHttpServer
 
+	updater *pangolinUpdater
+
 	ui           *pangolinUI
 	systrayItems pangolinMenu
 
@@ -70,7 +82,7 @@ type pangolinClient struct {
 }
 
 func (c *pangolinClient) version() string {
-	return fmt.Sprintf("Pangolin-%s 0.0.1dev", runtime.GOOS)
+	return fmt.Sprintf("Pangolin-%s %s", runtime.GOOS, PANGOLIN_VERSION)
 }
 
 func (c *pangolinClient) loadCaCerts() *x509.CertPool {
@@ -101,6 +113,31 @@ func (c *pangolinClient) loadDNSKey() (*ecdsa.PublicKey, error) {
 		return nil, err
 	}
 	return ecdns.LoadPublicKeyBytes(data)
+}
+
+func (c *pangolinClient) loadUpdateKey() (*rsa.PublicKey, error) {
+	path := c.options.updatePubKey
+	var data []byte
+	var e error
+	if path != "" {
+		data, e = ioutil.ReadFile(path)
+	} else {
+		data, e = c.fs.Get("keys/updatepub.pem")
+
+	}
+	if e != nil {
+		return nil, e
+	}
+
+	block, _ := pem.Decode(data)
+	if block == nil {
+		return nil, errors.New("couldn't decode PEM file")
+	}
+	pubkey, e := x509.ParsePKIXPublicKey(block.Bytes)
+	if e != nil {
+		return nil, e
+	}
+	return pubkey.(*rsa.PublicKey), nil
 }
 
 type patchEmbeddedFile struct {
@@ -341,6 +378,8 @@ func (c *pangolinClient) parseFlags() {
 	flag.StringVar(&c.options.logFilename, "logfile", "", "file to record log")
 	flag.StringVar(&c.options.pidFilename, "pidfile", "", "file to save process id")
 	flag.StringVar(&c.options.landingPage, "landing-page", "https://www.google.com/", "")
+	flag.StringVar(&c.options.updatePubKey, "update-pubkey-file", "", "PEM encoded RSA public key file, use embedded public key if not specified")
+	flag.StringVar(&c.options.updateURL, "update-url", "https://pangolinfq.org/update", "url for auto-update")
 	flag.Parse()
 	c.options.resolvers = strings.Split(resolvers, ",")
 }
@@ -385,11 +424,12 @@ func (c *pangolinClient) _main() {
 		},
 		rendezvousor: c.dnsClient,
 		ch:           make(chan *tunnelRequest),
+		quit:         make(chan bool),
 		auth:         sockstun.NewTunnelAnonymousAuthenticator(),
 	}
 	go tunnelHandler.run()
 	c.tunnelProxy = gosocks.NewServer(
-		c.options.localSocksAddr,
+		c.tunnelListener.Addr().String(),
 		5*time.Minute,
 		tunnelHandler,
 		// let handler's authenticator to process SOCKS authentication
@@ -505,9 +545,18 @@ func (c *pangolinClient) _main() {
 	if c.openLandingPage() {
 		if c.openSettingsPage() {
 			// wait to avoid launching new browser window
-			time.Sleep(2 * time.Second)
+			time.Sleep(3 * time.Second)
 			c.ui.open(c.options.landingPage)
 		}
+	}
+
+	// updater
+	proxyURL, _ := url.Parse("http://" + localHTTPAddr)
+	updateKey, e := c.loadUpdateKey()
+	if e == nil {
+		c.updater = newUpdater(PANGOLIN_VERSION, 2*time.Hour, updateKey, c.options.updateURL, proxyURL)
+		go c.updater.run()
+		c.addExitFunc(c.updater.stop)
 	}
 
 	c.waitForExit()

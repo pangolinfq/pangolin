@@ -1,16 +1,16 @@
-VERSION := 0.0.1dev
+VERSION := 0.0.1-dev
 SHORTVERSION := 0.0.1
 
 .PHONY: windows linux darwin package-darwin clean
 
 windows:
-	GOOS=windows GOARCH=386 go build -ldflags "-H windowsgui" -o pangolin.exe
+	GOOS=windows GOARCH=386 go build -ldflags="-w -s -H windowsgui" -a -o pangolin.exe
 
 linux:
-	GOOS=linux GOARCH=amd64 go build -o pangolin
+	GOOS=linux GOARCH=amd64 go build -ldflags="-w -s -linkmode internal" -a -o pangolin
 
 darwin:
-	GOOS=darwin GOARCH=amd64 go build -o pangolin_darwin_amd64
+	GOOS=darwin GOARCH=amd64 go build -ldflags="-w" -a -o pangolin_darwin_amd64
 
 package-darwin: darwin
 	rm -rf Pangolin.app
