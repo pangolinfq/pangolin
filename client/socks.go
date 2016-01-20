@@ -4,7 +4,7 @@ import (
 	"log"
 	"strings"
 	"time"
-	
+
 	"github.com/pangolinfq/golibfq/chain"
 	"github.com/yinghuocho/gosocks"
 )
@@ -87,3 +87,5 @@ func (f *forwardingHandler) ServeSocks(conn *gosocks.SocksConn) {
 		return
 	}
 }
+
+func (f *forwardingHandler) Quit() {}

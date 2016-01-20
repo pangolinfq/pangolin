@@ -24,6 +24,7 @@ type websocketTunnelHandler struct {
 	tlsConfig    *tls.Config
 	rendezvousor r.Rendezvousor
 	ch           chan *tunnelRequest
+	quit         chan bool
 	auth         sockstun.TunnelAuthenticator
 
 	proxyPeers []r.Peer
@@ -156,12 +157,16 @@ func (h *websocketTunnelHandler) run() {
 	var client *mux.Client
 	var stream *mux.Stream
 	for {
-		request := <-h.ch
-		client, stream = h.muxStream(client)
-		if stream == nil {
-			close(request.ret)
-		} else {
-			request.ret <- stream
+		select {
+		case request := <-h.ch:
+			client, stream = h.muxStream(client)
+			if stream == nil {
+				close(request.ret)
+			} else {
+				request.ret <- stream
+			}
+		case <-h.quit:
+			break
 		}
 	}
 }
@@ -181,4 +186,8 @@ func (h *websocketTunnelHandler) ServeSocks(conn *gosocks.SocksConn) {
 		return
 	}
 	sockstun.TunnelClient(conn, tunnel)
+}
+
+func (h *websocketTunnelHandler) Quit() {
+	close(h.quit)
 }
