@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"compress/bzip2"
 	"crypto"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -143,12 +144,27 @@ func (u *pangolinUpdater) update(version string) (string, bool) {
 	if result == nil {
 		return version, succ
 	}
-	resp, e := u.httpClient.Get(result.PatchURL)
+	var downloadURL string
+	if result.PatchType == server.PATCHTYPE_NONE {
+		downloadURL = result.URL
+	} else {
+		downloadURL = result.PatchURL
+	}
+
+	resp, e := u.httpClient.Get(downloadURL)
 	if e != nil {
+		log.Printf("fail to get patch: %v", e)
 		return version, false
 	}
 	defer resp.Body.Close()
-	e = update.Apply(resp.Body, u.options(result))
+
+	var newFile io.Reader
+	if result.PatchType == server.PATCHTYPE_NONE {
+		newFile = bzip2.NewReader(resp.Body)
+	} else {
+		newFile = resp.Body
+	}
+	e = update.Apply(newFile, u.options(result))
 	if e != nil {
 		if re := update.RollbackError(e); re != nil {
 			log.Printf("Failed to rollback from bad update: %v", re)
