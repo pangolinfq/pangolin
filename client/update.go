@@ -19,7 +19,7 @@ import (
 
 	"github.com/inconshreveable/go-update"
 	"github.com/kardianos/osext"
-	"github.com/pangolinfq/autoupdate-server/server"
+	"github.com/pangolinfq/autoupdate-server/args"
 )
 
 type pangolinUpdater struct {
@@ -64,12 +64,12 @@ func newUpdater(initialVersion string, interval time.Duration, pubKey *rsa.Publi
 	}
 }
 
-func (u *pangolinUpdater) check(version string) (*server.Result, bool) {
+func (u *pangolinUpdater) check(version string) (*args.Result, bool) {
 	checksum, e := u.checksum()
 	if e != nil {
 		return nil, false
 	}
-	param := server.Params{
+	param := args.Params{
 		AppVersion: version,
 		OS:         runtime.GOOS,
 		Arch:       runtime.GOARCH,
@@ -99,7 +99,7 @@ func (u *pangolinUpdater) check(version string) (*server.Result, bool) {
 		log.Printf("fail to read check-update response: %s", e)
 		return nil, false
 	}
-	result := &server.Result{}
+	result := &args.Result{}
 	if e = json.Unmarshal(respBytes, result); e != nil {
 		log.Printf("fail to parse check-update response: %s", e)
 		return nil, false
@@ -124,7 +124,7 @@ func (u *pangolinUpdater) checksum() (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-func (u *pangolinUpdater) options(result *server.Result) update.Options {
+func (u *pangolinUpdater) options(result *args.Result) update.Options {
 	opt := update.Options{
 		TargetPath: u.filePath,
 		PublicKey:  u.pubKey,
@@ -133,7 +133,7 @@ func (u *pangolinUpdater) options(result *server.Result) update.Options {
 	opt.Checksum, _ = hex.DecodeString(result.Checksum)
 	opt.Signature, _ = hex.DecodeString(result.Signature)
 	opt.Verifier = update.NewRSAVerifier()
-	if result.PatchType == server.PATCHTYPE_BSDIFF {
+	if result.PatchType == args.PATCHTYPE_BSDIFF {
 		opt.Patcher = update.NewBSDiffPatcher()
 	}
 	return opt
@@ -145,7 +145,7 @@ func (u *pangolinUpdater) update(version string) (string, bool) {
 		return version, succ
 	}
 	var downloadURL string
-	if result.PatchType == server.PATCHTYPE_NONE {
+	if result.PatchType == args.PATCHTYPE_NONE {
 		downloadURL = result.URL
 	} else {
 		downloadURL = result.PatchURL
@@ -159,7 +159,7 @@ func (u *pangolinUpdater) update(version string) (string, bool) {
 	defer resp.Body.Close()
 
 	var newFile io.Reader
-	if result.PatchType == server.PATCHTYPE_NONE {
+	if result.PatchType == args.PATCHTYPE_NONE {
 		newFile = bzip2.NewReader(resp.Body)
 	} else {
 		newFile = resp.Body
