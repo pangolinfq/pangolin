@@ -77,6 +77,7 @@ type pangolinClient struct {
 	ui           *pangolinUI
 	systrayItems pangolinMenu
 
+	uiCh        chan string
 	exitCh      chan error
 	chExitFuncs chan func()
 }
@@ -283,6 +284,16 @@ func (c *pangolinClient) openLandingPage() bool {
 		}
 	}
 	return true
+}
+
+func (c *pangolinClient) stopAutoUpdate() bool {
+	if c.appData != nil {
+		v, ok := c.appData.Get("stopAutoUpdate")
+		if ok && v == "1" {
+			return true
+		}
+	}
+	return false
 }
 
 // Handle system signals for clean exit
@@ -514,6 +525,7 @@ func (c *pangolinClient) _main() {
 		}
 	}
 	c.ui = startUI(c, uiListener)
+	go c.uiCommandProc()
 
 	// set PAC
 	icon, err := c.fs.Get("icons/24.ico")
@@ -551,16 +563,28 @@ func (c *pangolinClient) _main() {
 	}
 
 	// updater
-	proxyURL, _ := url.Parse("http://" + localHTTPAddr)
-	updateKey, e := c.loadUpdateKey()
-	if e == nil {
-		c.updater = newUpdater(PANGOLIN_VERSION, 2*time.Hour, updateKey, c.options.updateURL, proxyURL)
-		go c.updater.run()
-		c.addExitFunc(c.updater.stop)
+	if !c.stopAutoUpdate() {
+		c.startUpdater()
 	}
 
 	c.waitForExit()
 	os.Exit(0)
+}
+
+func (c *pangolinClient) startUpdater() {
+	proxyURL, _ := url.Parse("http://" + c.httpListener.Addr().String())
+	updateKey, e := c.loadUpdateKey()
+	if e == nil {
+		c.updater = newUpdater(PANGOLIN_VERSION, 2*time.Hour, updateKey, c.options.updateURL, proxyURL)
+		go c.updater.run()
+	}
+}
+
+func (c *pangolinClient) stopUpdater() {
+	if c.updater != nil {
+		c.updater.stop()
+		c.updater = nil
+	}
 }
 
 func (c *pangolinClient) switchTunneling(state bool) {
@@ -591,32 +615,52 @@ func (c *pangolinClient) switchFlags(name string, state bool) {
 	}
 }
 
-func (c *pangolinClient) tunnelingAllOn() {
-	c.switchTunneling(true)
+func (c *pangolinClient) autoUpdateOn() {
+	c.switchFlags("autoUpdate", true)
 }
 
-func (c *pangolinClient) tunnelingAllOff() {
-	c.switchTunneling(false)
+func (c *pangolinClient) autoUpdateOff() {
+	c.switchFlags("autoUpdate", false)
 }
 
-func (c *pangolinClient) openSettingsPageOn() {
-	c.switchFlags("openSettingsPage", true)
+func (c *pangolinClient) uiCommand(cmd string) {
+	c.uiCh <- cmd
 }
 
-func (c *pangolinClient) openSettingsPageOff() {
-	c.switchFlags("openSettingsPage", false)
-}
-
-func (c *pangolinClient) openLandingPageOn() {
-	c.switchFlags("openLandingPage", true)
-}
-
-func (c *pangolinClient) openLandingPageOff() {
-	c.switchFlags("openLandingPage", false)
+func (c *pangolinClient) uiCommandProc() {
+	for {
+		cmd := <-c.uiCh
+		switch {
+		case cmd == "openSettingsPageOn":
+			c.switchFlags("openSettingsPage", true)
+		case cmd == "openSettingsPageOff":
+			c.switchFlags("openSettingsPage", false)
+		case cmd == "openLandingPageOn":
+			c.switchFlags("openLandingPage", true)
+		case cmd == "openLandingPageOff":
+			c.switchFlags("openLandingPage", false)
+		case cmd == "tunnelingAllOn":
+			c.switchTunneling(true)
+		case cmd == "tunnelingAllOff":
+			c.switchTunneling(false)
+		case cmd == "stopAutoUpdateOn":
+			c.switchFlags("stopAutoUpdate", true)
+			c.stopUpdater()
+		case cmd == "stopAutoUpdateOff":
+			c.switchFlags("stopAutoUpdate", false)
+			c.startUpdater()
+		case strings.HasPrefix(cmd, "changeLocale|"):
+			lang := strings.Split(cmd, "|")[1]
+			c.changeLocale(lang)
+		default:
+			log.Printf("unknown command from UI")
+		}
+	}
 }
 
 func main() {
 	client := &pangolinClient{
+		uiCh:        make(chan string),
 		exitCh:      make(chan error, 1),
 		chExitFuncs: make(chan func(), 10),
 	}

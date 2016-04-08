@@ -11,5 +11,6 @@
     "UI_PROXY_ALL": "Proxy all traffic (Note: When this option is not marked, Pangolin loads <a href=\"domains\" target=\"_blank\">an embedded list of blocked websites</a>, and only proxies requests to these websites. This usually works well. If you cannot access a website, maybe the website is blocked but is not included in the embedded list. You can enable this option and try again)",
     "UI_SETTINGS_PAGE": "Open (this) settings page when Pangolin starts",
     "UI_LANDING_PAGE": "Open embedded landing page when Pangolin starts",
+    "UI_STOP_AUTOUPDATE": "Stop automatically updating to latest version",
     "UI_LANG": "Language"
 }

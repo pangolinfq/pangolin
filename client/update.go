@@ -181,7 +181,7 @@ func (u *pangolinUpdater) version() string {
 }
 
 func (u *pangolinUpdater) run() {
-	log.Printf("start updater ...")
+	log.Printf("start updater")
 	curVersion := u.initialVersion
 	timer := time.NewTimer(10 * time.Second)
 	for {

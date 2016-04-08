@@ -11,5 +11,6 @@
     "UI_PROXY_ALL": "通过代理转发所有请求 (说明: 当本选项未选择时, Pangolin 会加载<a href=\"domains\" target=\"_blank\">一个内置的被封网站列表</a>. 只有向这些网站发送的请求会通过代理转发. 一般情况下这一选项无需打开. 如果遇到有的网站无法打开, 可能是网站已经被封但不在内置的列表中. 这时候你可以打开这一选项，然后重试)",
     "UI_SETTINGS_PAGE": "Pangolin 启动时自动打开配置界面(即本页面)",
     "UI_LANDING_PAGE": "Pangolin 启动时自动打开内置首页",
+    "UI_STOP_AUTOUPDATE": "停止自动版本更新",
     "UI_LANG": "语言"
 }

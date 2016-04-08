@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/pangolinfq/i18n"
@@ -67,8 +68,9 @@ const (
 <h2>{{ i18n "UI_SETTINGS" }}</h2>
 <ul style="list-style: none;">
 <li><label><input type="checkbox" id="tunnelingAll" {{ if .TunnelingAll }} checked {{ end }}> {{ i18n "UI_PROXY_ALL" | unescaped }} </label></li>
-<li><label><input type="checkbox" id="openSettingsPage" {{ if .OpenSettingsPage }} checked {{ end }}> {{ i18n "UI_SETTINGS_PAGE" }}</label></li>
+<li><label><input type="checkbox" id="openSettingsPage" {{ if .OpenSettingsPage }} checked {{ end }}> {{ i18n "UI_SETTINGS_PAGE" }} </label></li>
 <li><label><input type="checkbox" id="openLandingPage" {{ if .OpenLandingPage }} checked {{ end }}> {{ i18n "UI_LANDING_PAGE" }}: <a href={{ .LandingPage }} target="_blank">{{ .LandingPage }}</a></label></li>
+<li><label><input type="checkbox" id="stopAutoUpdate" {{ if .StopAutoUpdate }} checked {{ end }}> {{ i18n "UI_STOP_AUTOUPDATE" }} </label></li>
 </ul>
 
 
@@ -195,6 +197,7 @@ type pangolinSettings struct {
 	TunnelingAll     bool
 	OpenSettingsPage bool
 	OpenLandingPage  bool
+	StopAutoUpdate   bool
 	Locales          map[string]string
 	CurrentLocale    string
 }
@@ -214,6 +217,7 @@ func (u *pangolinUI) settingsGET(w http.ResponseWriter, req *http.Request) {
 		TunnelingAll:     u.client.socksHandler.tunnelingAll,
 		OpenSettingsPage: u.client.openSettingsPage(),
 		OpenLandingPage:  u.client.openLandingPage(),
+		StopAutoUpdate:   u.client.stopAutoUpdate(),
 		Locales:          locales,
 		CurrentLocale:    i18n.CurrentLocale(),
 	}
@@ -233,24 +237,31 @@ func (u *pangolinUI) settingsPOST(w http.ResponseWriter, req *http.Request) {
 	switch id {
 	case "tunnelingAll":
 		if state == "1" {
-			u.client.tunnelingAllOn()
+			u.client.uiCommand("tunnelingAllOn")
 		} else {
-			u.client.tunnelingAllOff()
+			u.client.uiCommand("tunnelingAllOff")
 		}
 	case "openSettingsPage":
 		if state == "1" {
-			u.client.openSettingsPageOn()
+			u.client.uiCommand("openSettingsPageOn")
 		} else {
-			u.client.openSettingsPageOff()
+			u.client.uiCommand("openSettingsPageOff")
 		}
 	case "openLandingPage":
 		if state == "1" {
-			u.client.openLandingPageOn()
+			u.client.uiCommand("openLandingPageOn")
 		} else {
-			u.client.openLandingPageOff()
+			u.client.uiCommand("openLandingPageOff")
 		}
+	case "stopAutoUpdate":
+		if state == "1" {
+			u.client.uiCommand("stopAutoUpdateOn")
+		} else {
+			u.client.uiCommand("stopAutoUpdateOff")
+		}
+
 	case "locale":
-		u.client.changeLocale(state)
+		u.client.uiCommand(strings.Join([]string{"changeLocale", state}, "|"))
 	default:
 		http.Error(w, "Unexpected settings option", http.StatusBadRequest)
 	}
