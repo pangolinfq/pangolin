@@ -45,7 +45,7 @@ func genPAC(proxyURL string) []byte {
 }
 
 func pacPath() string {
-	return "/pangolin.pac"
+	return "pangolin.pac"
 }
 
 func promptPrivilegeEscalation(icon []byte) error {

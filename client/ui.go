@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"html/template"
 	"log"
+	"math/rand"
 	"net"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/pangolinfq/i18n"
 	"github.com/skratchdot/open-golang/open"
@@ -30,7 +32,8 @@ const (
 <head>
 <title>{{ i18n "UI_TITLE" }}</title>
 <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
-<script type="text/javascript" src="/static/js/jquery-1.11.3.min.js"></script>
+<base href={{ .Root }}>
+<script type="text/javascript" src="static/js/jquery-1.11.3.min.js"></script>
 </head>
 <body>
 <p>
@@ -38,7 +41,7 @@ const (
 </p>
 
 <p>
-<img src="/static/icons/128.ico" alt="Pangolin"></img>
+<img src="static/icons/128.ico" alt="Pangolin"></img>
 </p>
 
 <div id="alert">
@@ -80,7 +83,7 @@ $(document).ready(function(e) {
   	$("input:checkbox").change(function() { 
     	var isChecked = $(this).is(":checked") ? 1:0; 
         $.ajax({
-        	url: '/settings',
+        	url: 'settings',
             type: 'POST',
             data: { id:$(this).attr("id"), state:isChecked }
         });        
@@ -89,7 +92,7 @@ $(document).ready(function(e) {
     $('select').on('change', function() {
   		var state = this.value;
   		$.ajax({
-        	url: '/settings',
+        	url: 'settings',
             type: 'POST',
             data: { id:$(this).attr("id"), state:state },
             success: function() {
@@ -105,23 +108,35 @@ $(document).ready(function(e) {
 )
 
 type pangolinUI struct {
+	token       string
 	mux         *http.ServeMux
 	root        string
 	settingsUrl string
 	client      *pangolinClient
 }
 
+func token() string {
+	rand.Seed(time.Now().UTC().UnixNano())
+	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+	result := make([]byte, 32)
+	for i := 0; i < 32; i++ {
+		result[i] = chars[rand.Intn(len(chars))]
+	}
+	return string(result)
+}
+
 func startUI(c *pangolinClient, l net.Listener) *pangolinUI {
+	token := token()
 	ui := &pangolinUI{
-		root:        fmt.Sprintf("http://%s", l.Addr().String()),
-		settingsUrl: fmt.Sprintf("http://%s/settings", l.Addr().String()),
+		token:       token,
+		root:        fmt.Sprintf("http://%s/%s/", l.Addr().String(), token),
+		settingsUrl: fmt.Sprintf("http://%s/%s/settings", l.Addr().String(), token),
 		mux:         http.NewServeMux(),
 		client:      c,
 	}
-	ui.mux.Handle("/settings", http.HandlerFunc(ui.settings))
-	ui.mux.Handle("/domains", http.HandlerFunc(ui.domains))
-	ui.mux.Handle("/env", http.HandlerFunc(ui.env))
-	ui.mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(c.fs)))
+	ui.mux.Handle(fmt.Sprintf("/%s/settings", ui.token), http.HandlerFunc(ui.settings))
+	ui.mux.Handle(fmt.Sprintf("/%s/domains", ui.token), http.HandlerFunc(ui.domains))
+	ui.mux.Handle(fmt.Sprintf("/%s/static/", ui.token), http.StripPrefix(fmt.Sprintf("/%s/static/", ui.token), http.FileServer(c.fs)))
 	go func() {
 		server := &http.Server{
 			Handler: ui.mux,
@@ -136,7 +151,7 @@ func startUI(c *pangolinClient, l net.Listener) *pangolinUI {
 }
 
 func (u *pangolinUI) handle(path string, handler http.Handler) string {
-	u.mux.Handle(path, handler)
+	u.mux.Handle(fmt.Sprintf("/%s/%s", u.token, path), handler)
 	return u.root + path
 }
 
@@ -146,14 +161,6 @@ func (u *pangolinUI) show() {
 
 func (u *pangolinUI) open(url string) {
 	open.Start(url)
-}
-
-// for debug
-func (u *pangolinUI) env(w http.ResponseWriter, req *http.Request) {
-	env := os.Environ()
-	for _, e := range env {
-		w.Write([]byte(e))
-	}
 }
 
 func (u *pangolinUI) domains(w http.ResponseWriter, req *http.Request) {
@@ -180,6 +187,7 @@ func (u *pangolinUI) settings(w http.ResponseWriter, req *http.Request) {
 }
 
 type pangolinSettings struct {
+	Root             string
 	Version          string
 	HTTPProxyAddr    string
 	SocksProxyAddr   string
@@ -198,6 +206,7 @@ func (u *pangolinUI) settingsGET(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	settings := &pangolinSettings{
+		Root:             u.root,
 		Version:          u.client.version(),
 		HTTPProxyAddr:    u.client.httpListener.Addr().String(),
 		SocksProxyAddr:   u.client.socksListener.Addr().String(),
