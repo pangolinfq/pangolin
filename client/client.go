@@ -38,7 +38,7 @@ import (
 )
 
 const (
-	PANGOLIN_VERSION = "0.0.1-dev"
+	PANGOLIN_VERSION = "0.0.2-dev"
 )
 
 type clientOptions struct {
