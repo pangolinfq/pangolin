@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Pangolin
+GenericName=Pangolin
+Comment=Pangolin Proxy
+Exec=pangolin
+Icon=pangolin
+Terminal=false
+Type=Application
+Categories=Network;
+StartupNotify=true

@@ -1,0 +1,24 @@
+#!/bin/bash
+
+PANGOLIN_SCRIPT=$(readlink -f "$0")
+PANGOLIN_SCRIPT_DIR=$(dirname "$PANGOLIN_SCRIPT")
+PANGOLIN_SYS_BIN=$PANGOLIN_SCRIPT_DIR/pangolin-bin
+
+PANGOLIN_USER_DIR=$HOME/.pangolin
+PANGOLIN_SYS_BIN_HASH=$PANGOLIN_USER_DIR/bin/pangolin.sha1
+PANGOLIN_USER_BIN=$PANGOLIN_USER_DIR/bin/pangolin
+
+if [ -f $PANGOLIN_SYS_BIN_HASH ]; then
+    sha1sum -c $PANGOLIN_SYS_BIN_HASH || rm -f $PANGOLIN_USER_BIN;
+else
+    rm -f $PANGOLIN_USER_BIN;
+fi
+
+if [ ! -f $PANGOLIN_USER_BIN ]; then
+    mkdir -p $PANGOLIN_USER_DIR/bin
+    cp $PANGOLIN_SYS_BIN $PANGOLIN_USER_BIN
+    sha1sum $PANGOLIN_SYS_BIN > $PANGOLIN_SYS_BIN_HASH
+    chmod +x $PANGOLIN_USER_BIN
+fi
+
+exec "$PANGOLIN_USER_BIN" "$@"

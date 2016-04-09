@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"crypto/ecdsa"
 	"crypto/md5"
+	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
@@ -38,7 +39,7 @@ import (
 )
 
 const (
-	PANGOLIN_VERSION = "0.0.2-dev"
+	PANGOLIN_VERSION = "0.0.3-dev"
 )
 
 type clientOptions struct {
@@ -82,6 +83,15 @@ type pangolinClient struct {
 	uiCh        chan string
 	exitCh      chan error
 	chExitFuncs chan func()
+}
+
+func genUUID() (string, error) {
+	b := make([]byte, 16)
+	_, err := rand.Read(b)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%X-%X-%X-%X-%X", b[0:4], b[4:6], b[6:8], b[8:10], b[10:]), nil
 }
 
 func (c *pangolinClient) version() string {
@@ -252,6 +262,25 @@ func (c *pangolinClient) getLocalHTTPAddr() string {
 	return c.options.localHTTPAddr
 }
 
+func (c *pangolinClient) uuid() string {
+	if c.appData != nil {
+		id, ok := c.appData.Get("uuid")
+		if ok {
+			return id
+		} else {
+			id, err := genUUID()
+			if err != nil {
+				return "35009a79-1a05-49d7-b876-2b884d0f825b"
+			} else {
+				c.appData.Put("uuid", id)
+				return id
+			}
+		}
+	} else {
+		return "35009a79-1a05-49d7-b876-2b884d0f825b"
+	}
+}
+
 func (c *pangolinClient) isTunnelingAll(domains map[string]bool) bool {
 	if c.options.tunnelingAll {
 		return true
@@ -411,7 +440,7 @@ func (c *pangolinClient) _main() {
 	if err != nil {
 		log.Printf("WARNING: unable to load/store customized settings: %s", err)
 	}
-
+	
 	// initiate log file
 	logFile := utils.RotateLog(c.options.logFilename, nil)
 	if c.options.logFilename != "" && logFile == nil {
@@ -571,7 +600,7 @@ func (c *pangolinClient) _main() {
 	}
 
 	// state, report without using proxy
-	c.state = newState(c.options.trackingID, nil)
+	c.state = newState(c.uuid(), c.options.trackingID, nil)
 	go c.state.run()
 	c.state.event("client", "launch")
 

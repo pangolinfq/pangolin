@@ -55,7 +55,7 @@ func OpenAppData(appName string) (*AppData, error) {
 	if e != nil {
 		return nil, e
 	}
-	name := path.Join(u.HomeDir, "."+appName)
+	name := path.Join(u.HomeDir, "."+appName+".conf")
 	f, e := os.OpenFile(name, os.O_RDWR|os.O_CREATE, 0666)
 	if e != nil {
 		return nil, e

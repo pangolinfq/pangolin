@@ -21,8 +21,8 @@ var (
 		"unescaped": func(x string) template.HTML { return template.HTML(x) },
 	}
 	locales = map[string]string{
-		"en_USE": "English",
-		"zh_CN":  "中文(简体)",
+		"en_US": "English",
+		"zh_CN": "中文(简体)",
 	}
 )
 
