@@ -56,6 +56,7 @@ type clientOptions struct {
 	landingPage         string
 	updatePubKey        string
 	updateURL           string
+	trackingID          string
 }
 
 type pangolinClient struct {
@@ -73,6 +74,7 @@ type pangolinClient struct {
 	httpProxy      *goproxy.ProxyHttpServer
 
 	updater *pangolinUpdater
+	state   *pangolinState
 
 	ui           *pangolinUI
 	systrayItems pangolinMenu
@@ -391,6 +393,7 @@ func (c *pangolinClient) parseFlags() {
 	flag.StringVar(&c.options.landingPage, "landing-page", "https://www.google.com/", "")
 	flag.StringVar(&c.options.updatePubKey, "update-pubkey-file", "", "PEM encoded RSA public key file, use embedded public key if not specified")
 	flag.StringVar(&c.options.updateURL, "update-url", "https://pangolinfq.org/update", "url for auto-update")
+	flag.StringVar(&c.options.trackingID, "tracking-id", "UA-76187137-1", "Google Analytics tracking ID")
 	flag.Parse()
 	c.options.resolvers = strings.Split(resolvers, ",")
 }
@@ -566,6 +569,11 @@ func (c *pangolinClient) _main() {
 	if !c.stopAutoUpdate() {
 		c.startUpdater()
 	}
+
+	// state, report without using proxy
+	c.state = newState(c.options.trackingID, nil)
+	go c.state.run()
+	c.state.event("client", "launch")
 
 	c.waitForExit()
 	os.Exit(0)

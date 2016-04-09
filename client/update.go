@@ -37,18 +37,11 @@ type pangolinUpdater struct {
 
 func newUpdater(initialVersion string, interval time.Duration, pubKey *rsa.PublicKey, updateURL string, proxyURL *url.URL) *pangolinUpdater {
 	filePath, _ := osext.Executable()
-	var httpClient *http.Client
-	if proxyURL == nil {
-		httpClient = &http.Client{
-			Timeout: time.Minute,
-		}
-	} else {
-		httpClient = &http.Client{
-			Transport: &http.Transport{
-				Proxy: func(r *http.Request) (*url.URL, error) { return proxyURL, nil },
-			},
-			Timeout: time.Minute,
-		}
+	httpClient := &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyURL(proxyURL),
+		},
+		Timeout: time.Minute,
 	}
 	return &pangolinUpdater{
 		initialVersion: initialVersion,
