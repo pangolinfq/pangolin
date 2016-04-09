@@ -41,7 +41,7 @@ package-linux: linux
 	$(call fpm-debian-build,"amd64","${VERSION}")
 
 darwin:
-    GOOS=darwin GOARCH=amd64 go build -ldflags="-w" -a -o pangolin_darwin_amd64
+	GOOS=darwin GOARCH=amd64 go build -ldflags="-w" -a -o pangolin_darwin_amd64
 
 package-darwin: darwin
 	rm -rf Pangolin.app
