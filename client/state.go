@@ -1,13 +1,12 @@
 package main
 
 import (
+	"log"
 	"net/http"
 	"net/url"
 	"runtime"
 	"strings"
 	"time"
-
-	"log"
 )
 
 type pangolinState struct {

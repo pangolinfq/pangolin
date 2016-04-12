@@ -19,7 +19,7 @@ import (
 
 	"github.com/inconshreveable/go-update"
 	"github.com/kardianos/osext"
-	"github.com/pangolinfq/autoupdate-server/args"
+	"github.com/yinghuocho/autoupdate-server/args"
 )
 
 type pangolinUpdater struct {

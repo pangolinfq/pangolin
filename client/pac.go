@@ -10,7 +10,7 @@ import (
 
 	"github.com/getlantern/filepersist"
 	"github.com/getlantern/pac"
-	"github.com/pangolinfq/i18n"
+	"github.com/yinghuocho/i18n"
 )
 
 const (
@@ -44,7 +44,7 @@ func genPAC(proxyURL string) []byte {
 	return pacFile
 }
 
-func pacPath() string {
+func pacFilename() string {
 	return "pangolin.pac"
 }
 

@@ -4,12 +4,6 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"flag"
-	"github.com/pangolinfq/golibfq/mux"
-	"github.com/pangolinfq/golibfq/obf"
-	"github.com/pangolinfq/golibfq/sockstun"
-	"github.com/pangolinfq/pangolin/utils"
-	"github.com/yinghuocho/gosocks"
-	"golang.org/x/net/websocket"
 	"log"
 	"net"
 	"net/http"
@@ -17,6 +11,13 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/yinghuocho/golibfq/mux"
+	"github.com/yinghuocho/golibfq/obf"
+	"github.com/yinghuocho/golibfq/sockstun"
+	"github.com/yinghuocho/golibfq/utils"
+	"github.com/yinghuocho/gosocks"
+	"golang.org/x/net/websocket"
 )
 
 type websocketTunnelHandler struct {

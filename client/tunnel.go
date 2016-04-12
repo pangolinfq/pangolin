@@ -8,12 +8,13 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/pangolinfq/golibfq/mux"
-	"github.com/pangolinfq/golibfq/obf"
-	"github.com/pangolinfq/golibfq/sockstun"
-	r "github.com/pangolinfq/pangolin/rendezvous"
+	"github.com/yinghuocho/golibfq/mux"
+	"github.com/yinghuocho/golibfq/obf"
+	"github.com/yinghuocho/golibfq/sockstun"
 	"github.com/yinghuocho/gosocks"
 	"golang.org/x/net/websocket"
+	
+	r "github.com/pangolinfq/pangolin/rendezvous"
 )
 
 type tunnelRequest struct {

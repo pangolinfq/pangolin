@@ -2,9 +2,10 @@ package main
 
 import (
 	"flag"
-	"github.com/pangolinfq/pangolin/rendezvous/ecdns"
 	"log"
 	"time"
+	
+	"github.com/pangolinfq/pangolin/rendezvous/ecdns"
 )
 
 func main() {

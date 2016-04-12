@@ -3,13 +3,15 @@ package main
 import (
 	"bufio"
 	"flag"
-	"github.com/pangolinfq/pangolin/rendezvous/ecdns"
-	"github.com/pangolinfq/pangolin/utils"
 	"log"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
+
+	"github.com/yinghuocho/golibfq/utils"
+	
+	"github.com/pangolinfq/pangolin/rendezvous/ecdns"
 )
 
 func loadData(filename string) (map[string]string, error) {

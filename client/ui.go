@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pangolinfq/i18n"
 	"github.com/skratchdot/open-golang/open"
+	"github.com/yinghuocho/i18n"
 )
 
 var (

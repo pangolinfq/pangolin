@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pangolinfq/golibfq/chain"
+	"github.com/yinghuocho/golibfq/chain"
 	"github.com/yinghuocho/gosocks"
 )
 

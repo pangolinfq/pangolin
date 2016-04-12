@@ -28,14 +28,15 @@ import (
 
 	"github.com/elazarl/goproxy"
 	"github.com/getlantern/systray"
-	"github.com/pangolinfq/golibfq/chain"
-	"github.com/pangolinfq/golibfq/sockstun"
-	"github.com/pangolinfq/i18n"
-	"github.com/pangolinfq/pangolin/rendezvous/ecdns"
-	"github.com/pangolinfq/pangolin/utils"
-	"github.com/pangolinfq/tarfs"
+	"github.com/yinghuocho/golibfq/chain"
+	"github.com/yinghuocho/golibfq/sockstun"
+	"github.com/yinghuocho/golibfq/utils"
 	"github.com/yinghuocho/gosocks"
+	"github.com/yinghuocho/i18n"
+	"github.com/yinghuocho/tarfs"
 	"golang.org/x/codereview/patch"
+
+	"github.com/pangolinfq/pangolin/rendezvous/ecdns"
 )
 
 const (
@@ -440,7 +441,7 @@ func (c *pangolinClient) _main() {
 	if err != nil {
 		log.Printf("WARNING: unable to load/store customized settings: %s", err)
 	}
-	
+
 	// initiate log file
 	logFile := utils.RotateLog(c.options.logFilename, nil)
 	if c.options.logFilename != "" && logFile == nil {
@@ -549,9 +550,9 @@ func (c *pangolinClient) _main() {
 	// start web based UI
 	uiListener, err := net.Listen("tcp", c.options.localUIAddr)
 	if err != nil {
-		uiListener, err = net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 		log.Printf("fail to listen on specified UI (HTTP) address: %s", err)
 		log.Printf("try to use random local address")
+		uiListener, err = net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 		if err != nil {
 			log.Fatalf("FATAL: fail to listen on UI (HTTP) address: %s", err)
 		}
@@ -568,7 +569,7 @@ func (c *pangolinClient) _main() {
 	if err != nil {
 		log.Fatalf("Unable to escalate priviledge for setting PAC: %s", err)
 	}
-	pacURL := c.ui.handle(pacPath(), pacHandler(c.httpListener.Addr().String()))
+	pacURL := c.ui.handle(pacFilename(), pacHandler(c.httpListener.Addr().String()))
 	enablePAC(pacURL)
 	c.addExitFunc(disablePAC)
 
@@ -650,14 +651,6 @@ func (c *pangolinClient) switchFlags(name string, state bool) {
 			c.appData.Put(name, "0")
 		}
 	}
-}
-
-func (c *pangolinClient) autoUpdateOn() {
-	c.switchFlags("autoUpdate", true)
-}
-
-func (c *pangolinClient) autoUpdateOff() {
-	c.switchFlags("autoUpdate", false)
 }
 
 func (c *pangolinClient) uiCommand(cmd string) {
